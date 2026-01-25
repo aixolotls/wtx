@@ -13,6 +13,7 @@ import (
 	"os/signal"
 	"os/user"
 	"path/filepath"
+	"sort"
 	"strings"
 	"sync"
 	"syscall"
@@ -42,10 +43,20 @@ func run(args []string) error {
 		return nil
 	}
 
-	lock, err := acquireWorktree(repoInfo)
+	selection, err := selectWorktree(repoInfo)
 	if err != nil {
 		return err
 	}
+
+	if selection.Kind == selectionNoWorktree {
+		setTitle(selection.Task)
+		if os.Getenv("TERM_PROGRAM") == "iTerm.app" {
+			setITermGrayTab()
+		}
+		return nil
+	}
+
+	lock := selection.Lock
 	defer lock.Release()
 	lock.StartToucher()
 	defer lock.StopToucher()
@@ -114,9 +125,57 @@ type worktreeOption struct {
 	Available bool
 }
 
-type worktreeOptionView struct {
-	Info        worktreeInfo
-	Unavailable string
+type selectionKind int
+
+const (
+	selectionWorktree selectionKind = iota
+	selectionNoWorktree
+)
+
+type selectionResult struct {
+	Kind selectionKind
+	Lock *worktreeLock
+	Task string
+}
+
+type menuItemKind int
+
+const (
+	menuWorktree menuItemKind = iota
+	menuAddWorktree
+	menuNoWorktree
+	menuDivider
+)
+
+type menuItem struct {
+	Kind       menuItemKind
+	Label      string
+	Worktree   worktreeInfo
+	LastUsed   string
+	LastUsedAt time.Time
+	Available  bool
+	IsWorktree bool
+	Status     string
+	Path       string
+}
+
+type actionItem struct {
+	Kind     string
+	Label    string
+	Disabled bool
+}
+
+type menuItemView struct {
+	Label      string
+	Branch     string
+	LastUsed   string
+	Path       string
+	Available  bool
+	IsWorktree bool
+	Status     string
+	BranchPad  int
+	LastUsedPad int
+	Kind       menuItemKind
 }
 
 type worktreeLock struct {
@@ -170,11 +229,15 @@ func gitOutputInDir(dir string, path string, args ...string) (string, error) {
 	return strings.TrimSpace(string(output)), nil
 }
 
-func acquireWorktree(info repoInfo) (*worktreeLock, error) {
+func selectWorktree(info repoInfo) (*selectionResult, error) {
 	gitPath, err := exec.LookPath("git")
 	if err != nil {
 		return nil, err
 	}
+
+	printBanner()
+	setTitle(fmt.Sprintf("[%s]", info.Name))
+	baseRef := defaultBaseRef(info.Path, gitPath)
 
 	for {
 		worktrees, err := listWorktrees(info.Path, gitPath)
@@ -191,31 +254,81 @@ func acquireWorktree(info repoInfo) (*worktreeLock, error) {
 			options = append(options, worktreeOption{Info: wt, Available: available})
 		}
 
-		if !hasAvailable(options) {
-			create, err := promptYesNo("No available worktrees. Create new? [y/N]: ")
-			if err != nil {
-				return nil, err
-			}
-			if !create {
-				return nil, errors.New("no available worktrees")
-			}
-			if err := createWorktree(info.Path, gitPath); err != nil {
-				return nil, err
-			}
-			continue
+		menuItems, err := buildMenuItems(info.Path, options)
+		if err != nil {
+			return nil, err
 		}
-
-		available, unavailableList := splitWorktrees(options)
-		chosen, err := promptSelectWorktree(available, unavailableList)
+		chosen, err := promptSelectMenu(info.Name, menuItems)
 		if err != nil {
 			return nil, err
 		}
 
-		lock, err := lockWorktree(info.Path, chosen)
+		switch chosen.Kind {
+		case menuAddWorktree:
+			newPath, newBranch, err := createWorktree(info.Path, gitPath)
+			if err != nil {
+				return nil, err
+			}
+			lock, err := lockWorktree(info.Path, worktreeInfo{Path: newPath, Branch: newBranch})
+			if err != nil {
+				return nil, err
+			}
+			return &selectionResult{Kind: selectionWorktree, Lock: lock}, nil
+		case menuNoWorktree:
+			task, err := promptTaskTitle()
+			if err != nil {
+				return nil, err
+			}
+			return &selectionResult{Kind: selectionNoWorktree, Task: task}, nil
+		case menuDivider:
+			continue
+		case menuWorktree:
+			if !chosen.Available {
+				continue
+			}
+			canDelete, deleteReason := deleteEligibility(info.Path, worktrees, chosen.Worktree)
+			action, err := promptWorktreeAction(chosen.Worktree, baseRef, canDelete, deleteReason)
+			if err != nil {
+				return nil, err
+			}
+			if action == "back" {
+				continue
+			}
+			if action == "delete" {
+				ok, err := promptYesNo("Delete worktree? [y/N]: ")
+				if err != nil {
+					return nil, err
+				}
+				if ok {
+					if err := deleteWorktree(info.Path, gitPath, chosen.Worktree.Path); err != nil {
+						return nil, err
+					}
+				}
+				continue
+			}
+			if action == "use_new_branch" {
+				branch, err := promptBranchName(baseRef)
+				if err != nil {
+					return nil, err
+				}
+				lock, err := lockWorktree(info.Path, chosen.Worktree)
+				if err != nil {
+					continue
+				}
+				if err := checkoutNewBranch(chosen.Worktree.Path, gitPath, branch, baseRef); err != nil {
+					lock.Release()
+					continue
+				}
+				lock.Branch = branch
+				return &selectionResult{Kind: selectionWorktree, Lock: lock}, nil
+			}
+		}
+
+		lock, err := lockWorktree(info.Path, chosen.Worktree)
 		if err != nil {
 			continue
 		}
-		return lock, nil
+		return &selectionResult{Kind: selectionWorktree, Lock: lock}, nil
 	}
 }
 
@@ -270,6 +383,13 @@ func shortBranch(ref string) string {
 	return ref
 }
 
+func shortRef(ref string) string {
+	ref = strings.TrimSpace(ref)
+	ref = strings.TrimPrefix(ref, "refs/remotes/")
+	ref = strings.TrimPrefix(ref, "refs/heads/")
+	return ref
+}
+
 func promptYesNo(prompt string) (bool, error) {
 	reader := bufio.NewReader(os.Stdin)
 	fmt.Fprint(os.Stdout, prompt)
@@ -281,94 +401,376 @@ func promptYesNo(prompt string) (bool, error) {
 	return line == "y" || line == "yes", nil
 }
 
-func promptSelectWorktree(available []worktreeInfo, unavailableList string) (worktreeInfo, error) {
+func worktreeLastUsed(repoRoot string, worktreePath string) (time.Time, string, error) {
+	lockPath, err := worktreeLockPath(repoRoot, worktreePath)
+	if err != nil {
+		return time.Time{}, "", err
+	}
+	info, err := os.Stat(lockPath)
+	if err != nil {
+		if !errors.Is(err, os.ErrNotExist) {
+			return time.Time{}, "", err
+		}
+		lastUsedPath, pathErr := worktreeLastUsedPath(repoRoot, worktreePath)
+		if pathErr != nil {
+			return time.Time{}, "", pathErr
+		}
+		info, err = os.Stat(lastUsedPath)
+		if err != nil {
+			if errors.Is(err, os.ErrNotExist) {
+				return time.Time{}, "never", nil
+			}
+			return time.Time{}, "", err
+		}
+	}
+	lastUsedAt := info.ModTime()
+	return lastUsedAt, humanizeDuration(time.Since(lastUsedAt)), nil
+}
+
+func humanizeDuration(d time.Duration) string {
+	if d < 10*time.Second {
+		return "just now"
+	}
+	if d < time.Minute {
+		return fmt.Sprintf("%ds ago", int(d.Seconds()))
+	}
+	if d < time.Hour {
+		return fmt.Sprintf("%dm ago", int(d.Minutes()))
+	}
+	if d < 24*time.Hour {
+		return fmt.Sprintf("%dh ago", int(d.Hours()))
+	}
+	days := int(d.Hours() / 24)
+	if days < 30 {
+		return fmt.Sprintf("%dd ago", days)
+	}
+	months := days / 30
+	return fmt.Sprintf("%dmo ago", months)
+}
+
+func buildMenuItems(repoRoot string, options []worktreeOption) ([]menuItem, error) {
+	items := make([]menuItem, 0, len(options)+2)
+	for _, option := range options {
+		lastUsedAt, lastUsedLabel, err := worktreeLastUsed(repoRoot, option.Info.Path)
+		if err != nil {
+			return nil, err
+		}
+		label := option.Info.Branch
+		status := "free"
+		if !option.Available {
+			status = "in use"
+		}
+		lastUsedText := "last used: " + lastUsedLabel
+		items = append(items, menuItem{
+			Kind:       menuWorktree,
+			Label:      label,
+			Worktree:   option.Info,
+			LastUsed:   lastUsedText,
+			LastUsedAt: lastUsedAt,
+			Available:  option.Available,
+			IsWorktree: true,
+			Status:     status,
+			Path:       option.Info.Path,
+		})
+	}
+	sort.SliceStable(items, func(i, j int) bool {
+		if items[i].Available != items[j].Available {
+			return items[i].Available
+		}
+		return items[i].LastUsedAt.After(items[j].LastUsedAt)
+	})
+	items = append(items,
+		menuItem{Kind: menuDivider, Label: "──────────", IsWorktree: false},
+		menuItem{Kind: menuAddWorktree, Label: "Add worktree...", IsWorktree: false},
+		menuItem{Kind: menuNoWorktree, Label: "No worktree (set task title)", IsWorktree: false},
+	)
+	return items, nil
+}
+
+func promptSelectMenu(repoName string, items []menuItem) (menuItem, error) {
+	funcMap := template.FuncMap{}
+	for key, value := range promptui.FuncMap {
+		funcMap[key] = value
+	}
+	funcMap["dim"] = promptui.Styler(promptui.FGFaint)
+	funcMap["dimBold"] = promptui.Styler(promptui.FGFaint, promptui.FGBold)
+
+	branchPad := maxBranchLen(items)
+	lastUsedPad := maxLastUsedLen(items)
+	list := make([]menuItemView, 0, len(items))
+	for _, item := range items {
+		list = append(list, menuItemView{
+			Label:      item.Label,
+			Branch:     item.Worktree.Branch,
+			LastUsed:   item.LastUsed,
+			Path:       item.Path,
+			Available:  item.Available,
+			IsWorktree: item.IsWorktree,
+			Status:     item.Status,
+			BranchPad:  branchPad,
+			LastUsedPad: lastUsedPad,
+			Kind:       item.Kind,
+		})
+	}
+
+	templates := &promptui.SelectTemplates{
+		Active:   "{{ if .IsWorktree }}{{ if .Available }}{{ cyan \"▸\" }} {{ cyan (bold (printf \"%-*s\" .BranchPad .Label)) }}  {{ printf \"%-7s\" .Status }} {{ printf \"%-*s\" .LastUsedPad .LastUsed }}{{ else }}{{ dim \"▸\" }} {{ dimBold (printf \"%-*s\" .BranchPad .Label) }}  {{ dim (printf \"%-7s %-*s\" .Status .LastUsedPad .LastUsed) }}{{ end }}{{ else }}{{ if eq .Kind 3 }}{{ dim \"▸\" }} {{ dim .Label }}{{ else }}{{ cyan \"▸\" }} {{ cyan .Label }}{{ end }}{{ end }}",
+		Inactive: "{{ if .IsWorktree }}{{ if .Available }}  {{ printf \"%-*s\" .BranchPad .Label }}  {{ printf \"%-7s\" .Status }} {{ printf \"%-*s\" .LastUsedPad .LastUsed }}{{ else }}  {{ dimBold (printf \"%-*s\" .BranchPad .Label) }}  {{ dim (printf \"%-7s %-*s\" .Status .LastUsedPad .LastUsed) }}{{ end }}{{ else }}{{ if eq .Kind 3 }}  {{ dim .Label }}{{ else }}  {{ .Label }}{{ end }}{{ end }}",
+		Selected: "{{ if .IsWorktree }}{{ if .Available }}{{ cyan \"✔\" }} {{ cyan (bold (printf \"%-*s\" .BranchPad .Label)) }}  {{ printf \"%-7s\" .Status }} {{ printf \"%-*s\" .LastUsedPad .LastUsed }}{{ else }}{{ dim \"✔\" }} {{ dimBold (printf \"%-*s\" .BranchPad .Label) }}  {{ dim (printf \"%-7s %-*s\" .Status .LastUsedPad .LastUsed) }}{{ end }}{{ else }}{{ if eq .Kind 3 }}{{ dim \"✔\" }} {{ dim .Label }}{{ else }}{{ cyan \"✔\" }} {{ cyan .Label }}{{ end }}{{ end }}",
+		Details:  "{{ if .IsWorktree }}{{ if .Path }}{{ \"Path: \" | faint }}{{ .Path | faint }}{{ end }}{{ end }}",
+		FuncMap:  funcMap,
+	}
+
+	cursorPos := firstAvailableIndex(list)
+	for {
+		selectPrompt := promptui.Select{
+			Label:     "Select worktree",
+			Items:     list,
+			Templates: templates,
+			Size:      min(len(list), 10),
+			CursorPos: cursorPos,
+			HideSelected: true,
+		}
+		index, _, err := selectPrompt.Run()
+		if err != nil {
+			return menuItem{}, err
+		}
+		if list[index].IsWorktree && !list[index].Available {
+			cursorPos = nextAvailableIndex(list, index)
+			continue
+		}
+		return items[index], nil
+	}
+}
+
+func promptWorktreeAction(wt worktreeInfo, baseRef string, allowDelete bool, deleteReason string) (string, error) {
+	displayBase := shortRef(baseRef)
+	deleteLabel := "Delete worktree"
+	if !allowDelete && deleteReason != "" {
+		deleteLabel = fmt.Sprintf("%s (%s)", deleteLabel, deleteReason)
+	}
+	items := []actionItem{
+		{Kind: "use", Label: fmt.Sprintf("Use (%s)", wt.Branch)},
+		{Kind: "use_new_branch", Label: fmt.Sprintf("Use and checkout new branch from %s", displayBase)},
+		{Kind: "delete", Label: deleteLabel, Disabled: !allowDelete},
+		{Kind: "back", Label: "Back"},
+	}
+
 	funcMap := template.FuncMap{}
 	for key, value := range promptui.FuncMap {
 		funcMap[key] = value
 	}
 
-	items := make([]worktreeOptionView, 0, len(available))
-	for _, wt := range available {
-		items = append(items, worktreeOptionView{
-			Info:        wt,
-			Unavailable: unavailableList,
-		})
-	}
-
 	templates := &promptui.SelectTemplates{
-		Active:   "{{ cyan \"▸\" }} {{ .Info.Path }} [{{ .Info.Branch }}]",
-		Inactive: "  {{ .Info.Path }} [{{ .Info.Branch }}]",
-		Selected: "{{ cyan \"✔\" }} {{ .Info.Path }} [{{ .Info.Branch }}]",
-		Details:  "{{ if .Unavailable }}\nIn use worktrees:\n{{ faint .Unavailable }}{{ end }}",
+		Active:   "{{ if .Disabled }}{{ cyan \"▸\" }} {{ faint .Label }}{{ else }}{{ cyan \"▸\" }} {{ cyan .Label }}{{ end }}",
+		Inactive: "{{ if .Disabled }}  {{ faint .Label }}{{ else }}  {{ .Label }}{{ end }}",
+		Selected: "{{ if .Disabled }}{{ faint .Label }}{{ else }}{{ cyan \"✔\" }} {{ cyan .Label }}{{ end }}",
 		FuncMap:  funcMap,
 	}
 
 	for {
 		selectPrompt := promptui.Select{
-			Label:     "Choose worktree",
+			Label:     fmt.Sprintf("Action for %s [%s]", wt.Path, wt.Branch),
 			Items:     items,
 			Templates: templates,
+			Size:      min(len(items), 6),
+			HideSelected: true,
 		}
 		index, _, err := selectPrompt.Run()
 		if err != nil {
-			return worktreeInfo{}, err
+			return "", err
 		}
-		return available[index], nil
-	}
-}
-
-func hasAvailable(options []worktreeOption) bool {
-	for _, option := range options {
-		if option.Available {
-			return true
-		}
-	}
-	return false
-}
-
-func splitWorktrees(options []worktreeOption) ([]worktreeInfo, string) {
-	available := make([]worktreeInfo, 0, len(options))
-	var unavailable []worktreeInfo
-	for _, option := range options {
-		if option.Available {
-			available = append(available, option.Info)
+		chosen := items[index]
+		if chosen.Disabled {
+			if deleteReason != "" {
+				fmt.Fprintln(os.Stdout, deleteReason)
+			} else {
+				fmt.Fprintln(os.Stdout, "That option is unavailable.")
+			}
 			continue
 		}
-		unavailable = append(unavailable, option.Info)
+		return chosen.Kind, nil
 	}
-	return available, formatUnavailableList(unavailable)
 }
 
-func formatUnavailableList(items []worktreeInfo) string {
-	if len(items) == 0 {
-		return ""
+func printBanner() {
+	const banner = `██     ██ ████████ ██   ██ 
+██     ██    ██     ██ ██  
+██  █  ██    ██      ███  
+██ ███ ██    ██     ██ ██ 
+ ███ ███     ██    ██   ██ 
+                           
+
+`
+	fmt.Fprint(os.Stdout, banner)
+}
+
+func promptTaskTitle() (string, error) {
+	prompt := promptui.Prompt{Label: "Task title"}
+	value, err := prompt.Run()
+	if err != nil {
+		return "", err
 	}
-	var builder strings.Builder
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return "", errors.New("task title required")
+	}
+	return value, nil
+}
+
+func deleteWorktree(repoRoot string, gitPath string, path string) error {
+	cmd := exec.Command(gitPath, "worktree", "remove", path)
+	cmd.Dir = repoRoot
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
+	return cmd.Run()
+}
+
+func checkoutNewBranch(worktreePath string, gitPath string, branch string, baseRef string) error {
+	cmd := exec.Command(gitPath, "checkout", "-b", branch, baseRef)
+	cmd.Dir = worktreePath
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
+	return cmd.Run()
+}
+
+func deleteEligibility(repoRoot string, all []worktreeInfo, target worktreeInfo) (bool, string) {
+	if len(all) <= 1 {
+		return false, "Cannot delete the last remaining worktree"
+	}
+	if isRepoRoot(repoRoot, target.Path) {
+		return false, "Cannot delete original worktree"
+	}
+	if !isManagedWorktree(repoRoot, target.Path) {
+		return false, "Cannot delete original worktree"
+	}
+	return true, ""
+}
+
+func isRepoRoot(repoRoot string, worktreePath string) bool {
+	rootReal, err := realPath(repoRoot)
+	if err != nil {
+		return repoRoot == worktreePath
+	}
+	worktreeReal, err := realPath(worktreePath)
+	if err != nil {
+		return repoRoot == worktreePath
+	}
+	return rootReal == worktreeReal
+}
+
+func isManagedWorktree(repoRoot string, worktreePath string) bool {
+	base := filepath.Base(repoRoot)
+	leaf := filepath.Base(worktreePath)
+	prefix := base + ".wt."
+	if !strings.HasPrefix(leaf, prefix) {
+		return false
+	}
+	suffix := strings.TrimPrefix(leaf, prefix)
+	return suffix != "" && isNumeric(suffix)
+}
+
+func isNumeric(value string) bool {
+	for _, ch := range value {
+		if ch < '0' || ch > '9' {
+			return false
+		}
+	}
+	return true
+}
+
+func writeLastUsed(repoRoot string, worktreePath string) error {
+	lastUsedPath, err := worktreeLastUsedPath(repoRoot, worktreePath)
+	if err != nil {
+		return err
+	}
+	if err := os.MkdirAll(filepath.Dir(lastUsedPath), 0o755); err != nil {
+		return err
+	}
+	timestamp := time.Now().UTC().Format(time.RFC3339Nano)
+	return os.WriteFile(lastUsedPath, []byte(timestamp+"\n"), 0o644)
+}
+
+func min(a int, b int) int {
+	if a < b {
+		return a
+	}
+	return b
+}
+
+func firstAvailableIndex(items []menuItemView) int {
+	for i, item := range items {
+		if item.IsWorktree && item.Available {
+			return i
+		}
+	}
+	return 0
+}
+
+func nextAvailableIndex(items []menuItemView, start int) int {
+	for i := start + 1; i < len(items); i++ {
+		if items[i].IsWorktree && items[i].Available {
+			return i
+		}
+	}
+	for i := 0; i < start; i++ {
+		if items[i].IsWorktree && items[i].Available {
+			return i
+		}
+	}
+	return 0
+}
+
+func maxBranchLen(items []menuItem) int {
+	maxLen := 0
 	for _, item := range items {
-		builder.WriteString("  ")
-		builder.WriteString(item.Path)
-		builder.WriteString(" [")
-		builder.WriteString(item.Branch)
-		builder.WriteString("] (in use)\n")
+		if !item.IsWorktree {
+			continue
+		}
+		if len(item.Label) > maxLen {
+			maxLen = len(item.Label)
+		}
 	}
-	return strings.TrimRight(builder.String(), "\n")
+	if maxLen < 4 {
+		maxLen = 4
+	}
+	return maxLen
 }
 
-func createWorktree(repoRoot string, gitPath string) error {
+func maxLastUsedLen(items []menuItem) int {
+	maxLen := 0
+	for _, item := range items {
+		if !item.IsWorktree {
+			continue
+		}
+		if len(item.LastUsed) > maxLen {
+			maxLen = len(item.LastUsed)
+		}
+	}
+	if maxLen < 12 {
+		maxLen = 12
+	}
+	return maxLen
+}
+
+func createWorktree(repoRoot string, gitPath string) (string, string, error) {
 	baseRef := defaultBaseRef(repoRoot, gitPath)
 	branch, err := promptBranchName(baseRef)
 	if err != nil {
-		return err
+		return "", "", err
 	}
 	target, err := nextWorktreePath(repoRoot)
 	if err != nil {
-		return err
+		return "", "", err
 	}
 	cmd := exec.Command(gitPath, "worktree", "add", "-b", branch, target, baseRef)
 	cmd.Dir = repoRoot
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
-	return cmd.Run()
+	if err := cmd.Run(); err != nil {
+		return "", "", err
+	}
+	return target, branch, nil
 }
 
 func promptBranchName(baseRef string) (string, error) {
@@ -526,10 +928,29 @@ func (l *worktreeLock) StopToucher() {
 }
 
 func (l *worktreeLock) Release() {
+	_ = writeLastUsed(l.RepoRoot, l.WorktreePath)
 	_ = os.Remove(l.Path)
 }
 
 func worktreeLockPath(repoRoot string, worktreePath string) (string, error) {
+	worktreeID, err := worktreeID(repoRoot, worktreePath)
+	if err != nil {
+		return "", err
+	}
+	lockDir := filepath.Join(os.Getenv("HOME"), ".claudex", "locks")
+	return filepath.Join(lockDir, worktreeID+".lock"), nil
+}
+
+func worktreeLastUsedPath(repoRoot string, worktreePath string) (string, error) {
+	worktreeID, err := worktreeID(repoRoot, worktreePath)
+	if err != nil {
+		return "", err
+	}
+	lastUsedDir := filepath.Join(os.Getenv("HOME"), ".claudex", "last_used")
+	return filepath.Join(lastUsedDir, worktreeID+".stamp"), nil
+}
+
+func worktreeID(repoRoot string, worktreePath string) (string, error) {
 	repoRootReal, err := realPath(repoRoot)
 	if err != nil {
 		return "", err
@@ -541,9 +962,7 @@ func worktreeLockPath(repoRoot string, worktreePath string) (string, error) {
 
 	repoID := hashString(repoRootReal)
 	worktreeID := hashString(repoID + ":" + worktreeReal)
-
-	lockDir := filepath.Join(os.Getenv("HOME"), ".claudex", "locks")
-	return filepath.Join(lockDir, worktreeID+".lock"), nil
+	return worktreeID, nil
 }
 
 func realPath(path string) (string, error) {
