@@ -68,15 +68,18 @@ func run(args []string) error {
 	}
 
 	lock := selection.Lock
+	title := fmt.Sprintf("[%s][%s]", repoInfo.Name, lock.Branch)
+	lock.Title = title
+	lock.ITermBlue = os.Getenv("TERM_PROGRAM") == "iTerm.app"
+
 	lock.StartToucher()
 	defer lock.StopToucher()
 	defer lock.Release()
 
 	fmt.Fprintln(os.Stdout, "using worktree at", lock.WorktreePath)
 
-	title := fmt.Sprintf("[%s][%s]", repoInfo.Name, lock.Branch)
 	setTitle(title)
-	if os.Getenv("TERM_PROGRAM") == "iTerm.app" {
+	if lock.ITermBlue {
 		setITermBlueTab()
 	}
 
@@ -240,6 +243,8 @@ type worktreeLock struct {
 	Branch       string
 	OwnerID      string
 	PID          int
+	Title        string
+	ITermBlue    bool
 	stopCh       chan struct{}
 	stopOnce     sync.Once
 	lostOnce     sync.Once
@@ -999,7 +1004,7 @@ func newWorktreeLock(path string, wt worktreeInfo, repoRoot string, ownerID stri
 
 func (l *worktreeLock) StartToucher() {
 	go func() {
-		ticker := time.NewTicker(2 * time.Second)
+		ticker := time.NewTicker(1 * time.Second)
 		defer ticker.Stop()
 		for {
 			select {
@@ -1012,6 +1017,12 @@ func (l *worktreeLock) StartToucher() {
 				if payload.OwnerID != l.OwnerID || payload.PID != l.PID {
 					l.signalLostLock("lock ownership lost")
 					return
+				}
+				if l.Title != "" {
+					setTitle(l.Title)
+					if l.ITermBlue {
+						setITermBlueTab()
+					}
 				}
 				now := time.Now()
 				_ = os.Chtimes(l.Path, now, now)
