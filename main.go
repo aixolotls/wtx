@@ -1060,7 +1060,14 @@ func worktreeLastUsedPath(repoRoot string, worktreePath string) (string, error) 
 }
 
 func worktreeID(repoRoot string, worktreePath string) (string, error) {
-	repoRootReal, err := realPath(repoRoot)
+	repoIDRoot := repoRoot
+	if gitPath, err := exec.LookPath("git"); err == nil {
+		commonDir, err := gitOutputInDir(repoRoot, gitPath, "rev-parse", "--path-format=absolute", "--git-common-dir")
+		if err == nil && commonDir != "" {
+			repoIDRoot = commonDir
+		}
+	}
+	repoRootReal, err := realPath(repoIDRoot)
 	if err != nil {
 		return "", err
 	}
