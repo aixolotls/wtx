@@ -2,6 +2,7 @@ package main
 
 import (
 	"bufio"
+	"crypto/rand"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
@@ -187,16 +188,16 @@ type actionItem struct {
 }
 
 type menuItemView struct {
-	Label      string
-	Branch     string
-	LastUsed   string
-	Path       string
-	Available  bool
-	IsWorktree bool
-	Status     string
-	BranchPad  int
+	Label       string
+	Branch      string
+	LastUsed    string
+	Path        string
+	Available   bool
+	IsWorktree  bool
+	Status      string
+	BranchPad   int
 	LastUsedPad int
-	Kind       menuItemKind
+	Kind        menuItemKind
 }
 
 type worktreeLock struct {
@@ -204,8 +205,11 @@ type worktreeLock struct {
 	WorktreePath string
 	RepoRoot     string
 	Branch       string
+	OwnerID      string
+	PID          int
 	stopCh       chan struct{}
 	stopOnce     sync.Once
+	lostOnce     sync.Once
 }
 
 func detectRepoInfo() (repoInfo, bool) {
@@ -521,16 +525,16 @@ func promptSelectMenu(repoName string, items []menuItem) (menuItem, error) {
 	list := make([]menuItemView, 0, len(items))
 	for _, item := range items {
 		list = append(list, menuItemView{
-			Label:      item.Label,
-			Branch:     item.Worktree.Branch,
-			LastUsed:   item.LastUsed,
-			Path:       item.Path,
-			Available:  item.Available,
-			IsWorktree: item.IsWorktree,
-			Status:     item.Status,
-			BranchPad:  branchPad,
+			Label:       item.Label,
+			Branch:      item.Worktree.Branch,
+			LastUsed:    item.LastUsed,
+			Path:        item.Path,
+			Available:   item.Available,
+			IsWorktree:  item.IsWorktree,
+			Status:      item.Status,
+			BranchPad:   branchPad,
 			LastUsedPad: lastUsedPad,
-			Kind:       item.Kind,
+			Kind:        item.Kind,
 		})
 	}
 
@@ -545,11 +549,11 @@ func promptSelectMenu(repoName string, items []menuItem) (menuItem, error) {
 	cursorPos := firstAvailableIndex(list)
 	for {
 		selectPrompt := promptui.Select{
-			Label:     "Select worktree",
-			Items:     list,
-			Templates: templates,
-			Size:      min(len(list), 10),
-			CursorPos: cursorPos,
+			Label:        "Select worktree",
+			Items:        list,
+			Templates:    templates,
+			Size:         min(len(list), 10),
+			CursorPos:    cursorPos,
 			HideSelected: true,
 		}
 		index, _, err := selectPrompt.Run()
@@ -591,10 +595,10 @@ func promptWorktreeAction(wt worktreeInfo, baseRef string, allowDelete bool, del
 
 	for {
 		selectPrompt := promptui.Select{
-			Label:     fmt.Sprintf("Action for %s [%s]", wt.Path, wt.Branch),
-			Items:     items,
-			Templates: templates,
-			Size:      min(len(items), 6),
+			Label:        fmt.Sprintf("Action for %s [%s]", wt.Path, wt.Branch),
+			Items:        items,
+			Templates:    templates,
+			Size:         min(len(items), 6),
 			HideSelected: true,
 		}
 		index, _, err := selectPrompt.Run()
@@ -682,12 +686,15 @@ func isRepoRoot(repoRoot string, worktreePath string) bool {
 
 func isManagedWorktree(repoRoot string, worktreePath string) bool {
 	base := filepath.Base(repoRoot)
-	leaf := filepath.Base(worktreePath)
-	prefix := base + ".wt."
-	if !strings.HasPrefix(leaf, prefix) {
+	parent := filepath.Dir(worktreePath)
+	if filepath.Base(parent) != base+".wt" {
 		return false
 	}
-	suffix := strings.TrimPrefix(leaf, prefix)
+	leaf := filepath.Base(worktreePath)
+	if !strings.HasPrefix(leaf, "wt.") {
+		return false
+	}
+	suffix := strings.TrimPrefix(leaf, "wt.")
 	return suffix != "" && isNumeric(suffix)
 }
 
@@ -821,10 +828,11 @@ func defaultBaseRef(repoRoot string, gitPath string) string {
 }
 
 func nextWorktreePath(repoRoot string) (string, error) {
-	parent := filepath.Dir(repoRoot)
 	base := filepath.Base(repoRoot)
+	parent := filepath.Dir(repoRoot)
+	worktreeRoot := filepath.Join(parent, base+".wt")
 	for i := 1; i < 10000; i++ {
-		candidate := filepath.Join(parent, fmt.Sprintf("%s.wt.%d", base, i))
+		candidate := filepath.Join(worktreeRoot, fmt.Sprintf("wt.%d", i))
 		_, statErr := os.Stat(candidate)
 		if errors.Is(statErr, os.ErrNotExist) {
 			return candidate, nil
@@ -864,7 +872,9 @@ func lockWorktree(repoRoot string, wt worktreeInfo) (*worktreeLock, error) {
 		return nil, err
 	}
 
-	payload, err := lockPayload(repoRoot, wt.Path)
+	ownerID := buildOwnerID()
+	pid := os.Getpid()
+	payload, err := lockPayload(repoRoot, wt.Path, ownerID, pid)
 	if err != nil {
 		return nil, err
 	}
@@ -877,7 +887,7 @@ func lockWorktree(repoRoot string, wt worktreeInfo) (*worktreeLock, error) {
 			return nil, werr
 		}
 		_ = file.Close()
-		return newWorktreeLock(lockPath, wt, repoRoot), nil
+		return newWorktreeLock(lockPath, wt, repoRoot, ownerID, pid), nil
 	}
 
 	if !errors.Is(err, os.ErrExist) {
@@ -892,7 +902,7 @@ func lockWorktree(repoRoot string, wt worktreeInfo) (*worktreeLock, error) {
 		return nil, errors.New("worktree locked")
 	}
 
-	tmpPath := lockPath + ".tmp"
+	tmpPath := lockPath + "." + randomToken() + ".tmp"
 	if err := os.WriteFile(tmpPath, payload, 0o644); err != nil {
 		return nil, err
 	}
@@ -901,13 +911,20 @@ func lockWorktree(repoRoot string, wt worktreeInfo) (*worktreeLock, error) {
 		return nil, err
 	}
 
-	return newWorktreeLock(lockPath, wt, repoRoot), nil
+	current, err := readLockPayload(lockPath)
+	if err != nil {
+		return nil, err
+	}
+	if current.OwnerID != ownerID || current.PID != pid {
+		return nil, errors.New("worktree locked")
+	}
+
+	return newWorktreeLock(lockPath, wt, repoRoot, ownerID, pid), nil
 }
 
-func lockPayload(repoRoot string, worktreePath string) ([]byte, error) {
-	ownerID := buildOwnerID()
+func lockPayload(repoRoot string, worktreePath string, ownerID string, pid int) ([]byte, error) {
 	data := map[string]any{
-		"pid":           os.Getpid(),
+		"pid":           pid,
 		"owner_id":      ownerID,
 		"worktree_path": worktreePath,
 		"repo_root":     repoRoot,
@@ -916,12 +933,14 @@ func lockPayload(repoRoot string, worktreePath string) ([]byte, error) {
 	return json.Marshal(data)
 }
 
-func newWorktreeLock(path string, wt worktreeInfo, repoRoot string) *worktreeLock {
+func newWorktreeLock(path string, wt worktreeInfo, repoRoot string, ownerID string, pid int) *worktreeLock {
 	return &worktreeLock{
 		Path:         path,
 		WorktreePath: wt.Path,
 		RepoRoot:     repoRoot,
 		Branch:       wt.Branch,
+		OwnerID:      ownerID,
+		PID:          pid,
 		stopCh:       make(chan struct{}),
 	}
 }
@@ -933,6 +952,15 @@ func (l *worktreeLock) StartToucher() {
 		for {
 			select {
 			case <-ticker.C:
+				payload, err := readLockPayload(l.Path)
+				if err != nil {
+					l.signalLostLock("lock file missing or unreadable")
+					return
+				}
+				if payload.OwnerID != l.OwnerID || payload.PID != l.PID {
+					l.signalLostLock("lock ownership lost")
+					return
+				}
 				now := time.Now()
 				_ = os.Chtimes(l.Path, now, now)
 			case <-l.stopCh:
@@ -953,12 +981,19 @@ func (l *worktreeLock) Release() {
 	_ = os.Remove(l.Path)
 }
 
+func (l *worktreeLock) signalLostLock(reason string) {
+	l.lostOnce.Do(func() {
+		fmt.Fprintln(os.Stderr, "wtx error: worktree lock lost:", reason)
+		os.Exit(1)
+	})
+}
+
 func worktreeLockPath(repoRoot string, worktreePath string) (string, error) {
 	worktreeID, err := worktreeID(repoRoot, worktreePath)
 	if err != nil {
 		return "", err
 	}
-	lockDir := filepath.Join(os.Getenv("HOME"), ".claudex", "locks")
+	lockDir := filepath.Join(os.Getenv("HOME"), ".wtx", "locks")
 	return filepath.Join(lockDir, worktreeID+".lock"), nil
 }
 
@@ -967,7 +1002,7 @@ func worktreeLastUsedPath(repoRoot string, worktreePath string) (string, error) 
 	if err != nil {
 		return "", err
 	}
-	lastUsedDir := filepath.Join(os.Getenv("HOME"), ".claudex", "last_used")
+	lastUsedDir := filepath.Join(os.Getenv("HOME"), ".wtx", "last_used")
 	return filepath.Join(lastUsedDir, worktreeID+".stamp"), nil
 }
 
@@ -1008,21 +1043,43 @@ func buildOwnerID() string {
 	}
 	host, _ := os.Hostname()
 	if name == "" && host == "" {
-		return "unknown"
+		name = "unknown"
 	}
 	if host == "" {
-		return name
+		host = "unknown"
 	}
-	if name == "" {
-		return host
-	}
-	return name + "@" + host
+	return fmt.Sprintf("%s@%s:%d:%s", name, host, os.Getpid(), randomToken())
 }
 
 func waitForInterrupt() {
 	signals := make(chan os.Signal, 1)
 	signal.Notify(signals, syscall.SIGINT, syscall.SIGTERM)
 	<-signals
+}
+
+type lockPayloadData struct {
+	OwnerID string `json:"owner_id"`
+	PID     int    `json:"pid"`
+}
+
+func readLockPayload(path string) (lockPayloadData, error) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return lockPayloadData{}, err
+	}
+	var payload lockPayloadData
+	if err := json.Unmarshal(data, &payload); err != nil {
+		return lockPayloadData{}, err
+	}
+	return payload, nil
+}
+
+func randomToken() string {
+	var buf [8]byte
+	if _, err := rand.Read(buf[:]); err != nil {
+		return fmt.Sprintf("%d", time.Now().UnixNano())
+	}
+	return hex.EncodeToString(buf[:])
 }
 
 const defaultAgentCommand = "claude"
@@ -1062,10 +1119,10 @@ func promptSetupMenu() (string, error) {
 		Selected: "{{ cyan \"✔\" }} {{ cyan .Label }}",
 	}
 	selectPrompt := promptui.Select{
-		Label:       "Setup",
-		Items:       items,
-		Templates:   templates,
-		Size:        min(len(items), 6),
+		Label:        "Setup",
+		Items:        items,
+		Templates:    templates,
+		Size:         min(len(items), 6),
 		HideSelected: true,
 	}
 	index, _, err := selectPrompt.Run()
