@@ -385,6 +385,26 @@ func selectWorktree(info repoInfo) (*selectionResult, error) {
 				lock.Branch = branch
 				return &selectionResult{Kind: selectionWorktree, Lock: lock}, nil
 			}
+			if action == "use_existing_branch" {
+				branches, err := listLocalBranches(info.Path, gitPath)
+				if err != nil {
+					return nil, err
+				}
+				branch, err := promptExistingBranch(branches)
+				if err != nil {
+					return nil, err
+				}
+				lock, err := lockWorktree(info.Path, chosen.Worktree)
+				if err != nil {
+					continue
+				}
+				if err := checkoutExistingBranch(chosen.Worktree.Path, gitPath, branch); err != nil {
+					lock.Release()
+					continue
+				}
+				lock.Branch = branch
+				return &selectionResult{Kind: selectionWorktree, Lock: lock}, nil
+			}
 		}
 
 		lock, err := lockWorktree(info.Path, chosen.Worktree)
@@ -625,6 +645,7 @@ func promptWorktreeAction(wt worktreeInfo, baseRef string, allowDelete bool, del
 	items := []actionItem{
 		{Kind: "use", Label: fmt.Sprintf("Use (%s)", wt.Branch)},
 		{Kind: "use_new_branch", Label: fmt.Sprintf("Use and checkout new branch from %s", displayBase)},
+		{Kind: "use_existing_branch", Label: "Use and checkout existing branch"},
 		{Kind: "delete", Label: deleteLabel, Disabled: !allowDelete},
 		{Kind: "back", Label: "Back"},
 	}
@@ -701,6 +722,14 @@ func deleteWorktree(repoRoot string, gitPath string, path string) error {
 
 func checkoutNewBranch(worktreePath string, gitPath string, branch string, baseRef string) error {
 	cmd := exec.Command(gitPath, "checkout", "-b", branch, baseRef)
+	cmd.Dir = worktreePath
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
+	return cmd.Run()
+}
+
+func checkoutExistingBranch(worktreePath string, gitPath string, branch string) error {
+	cmd := exec.Command(gitPath, "checkout", branch)
 	cmd.Dir = worktreePath
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
@@ -863,6 +892,41 @@ func promptBranchName(baseRef string) (string, error) {
 	return value, nil
 }
 
+func promptExistingBranch(branches []string) (string, error) {
+	if len(branches) == 0 {
+		return "", errors.New("no local branches found")
+	}
+	items := make([]actionItem, 0, len(branches))
+	for _, branch := range branches {
+		items = append(items, actionItem{Kind: branch, Label: branch})
+	}
+	templates := &promptui.SelectTemplates{
+		Active:   "{{ cyan \"▸\" }} {{ cyan .Label }}",
+		Inactive: "  {{ .Label }}",
+		Selected: "{{ cyan \"✔\" }} {{ cyan .Label }}",
+	}
+	selectPrompt := promptui.Select{
+		Label:        "Select branch",
+		Items:        items,
+		Templates:    templates,
+		Size:         min(len(items), 10),
+		HideSelected: true,
+		Searcher: func(input string, index int) bool {
+			branch := strings.ToLower(items[index].Label)
+			query := strings.ToLower(strings.TrimSpace(input))
+			if query == "" {
+				return true
+			}
+			return strings.Contains(branch, query)
+		},
+	}
+	index, _, err := selectPrompt.Run()
+	if err != nil {
+		return "", err
+	}
+	return items[index].Kind, nil
+}
+
 func defaultBaseRef(repoRoot string, gitPath string) string {
 	ref, err := gitOutputInDir(repoRoot, gitPath, "symbolic-ref", "--short", "refs/remotes/origin/HEAD")
 	if err == nil && ref != "" {
@@ -873,6 +937,22 @@ func defaultBaseRef(repoRoot string, gitPath string) string {
 		return ref
 	}
 	return "HEAD"
+}
+
+func listLocalBranches(repoRoot string, gitPath string) ([]string, error) {
+	output, err := gitOutputInDir(repoRoot, gitPath, "for-each-ref", "--format=%(refname:short)", "refs/heads")
+	if err != nil {
+		return nil, err
+	}
+	lines := strings.Split(output, "\n")
+	branches := make([]string, 0, len(lines))
+	for _, line := range lines {
+		line = strings.TrimSpace(line)
+		if line != "" {
+			branches = append(branches, line)
+		}
+	}
+	return branches, nil
 }
 
 func nextWorktreePath(repoRoot string) (string, error) {
