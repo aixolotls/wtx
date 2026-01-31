@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"bufio"
 	"crypto/rand"
 	"crypto/sha256"
@@ -346,15 +347,47 @@ func selectWorktree(info repoInfo) (*selectionResult, error) {
 		case menuDivider:
 			continue
 		case menuWorktree:
-			if !chosen.Available {
-				continue
-			}
 			canDelete, deleteReason := deleteEligibility(info.Path, worktrees, chosen.Worktree)
-			action, err := promptWorktreeAction(chosen.Worktree, baseRef, canDelete, deleteReason)
+			lockInfo, lockFound, lockErr := worktreeLockInfo(info.Path, chosen.Worktree.Path)
+			if lockErr != nil {
+				return nil, lockErr
+			}
+			action, err := promptWorktreeAction(chosen.Worktree, baseRef, canDelete, deleteReason, chosen.Available, lockInfo, lockFound)
 			if err != nil {
 				return nil, err
 			}
 			if action == "back" {
+				continue
+			}
+			if action == "open_shell" {
+				title := fmt.Sprintf("[%s][%s]", info.Name, chosen.Worktree.Branch)
+				setTitle(title)
+				if os.Getenv("TERM_PROGRAM") == "iTerm.app" {
+					setITermGrayTab()
+				}
+				if err := runShellInDir(chosen.Worktree.Path); err != nil {
+					return nil, err
+				}
+				return &selectionResult{Kind: selectionNoWorktree, Task: ""}, nil
+			}
+			if action == "force_unlock" {
+				lockPath, err := worktreeLockPath(info.Path, chosen.Worktree.Path)
+				if err != nil {
+					return nil, err
+				}
+				pidLabel := "unknown"
+				if lockFound && lockInfo.PID > 0 {
+					pidLabel = fmt.Sprintf("%d", lockInfo.PID)
+				}
+				ok, err := promptYesNo(fmt.Sprintf("Force unlock? wtx lives in pid %s [y/N]: ", pidLabel))
+				if err != nil {
+					return nil, err
+				}
+				if ok {
+					if err := os.Remove(lockPath); err != nil && !errors.Is(err, os.ErrNotExist) {
+						return nil, err
+					}
+				}
 				continue
 			}
 			if action == "delete" {
@@ -370,7 +403,11 @@ func selectWorktree(info repoInfo) (*selectionResult, error) {
 				continue
 			}
 			if action == "use_new_branch" {
-				branch, err := promptBranchName(baseRef)
+				if err := gitFetch(info.Path, gitPath); err != nil {
+					return nil, err
+				}
+				refAfterFetch := defaultBaseRef(info.Path, gitPath)
+				branch, err := promptBranchName(refAfterFetch)
 				if err != nil {
 					return nil, err
 				}
@@ -378,7 +415,7 @@ func selectWorktree(info repoInfo) (*selectionResult, error) {
 				if err != nil {
 					continue
 				}
-				if err := checkoutNewBranch(chosen.Worktree.Path, gitPath, branch, baseRef); err != nil {
+				if err := checkoutNewBranch(chosen.Worktree.Path, gitPath, branch, refAfterFetch); err != nil {
 					lock.Release()
 					continue
 				}
@@ -623,30 +660,38 @@ func promptSelectMenu(repoName string, items []menuItem) (menuItem, error) {
 			Size:         min(len(list), 10),
 			CursorPos:    cursorPos,
 			HideSelected: true,
+			Stdout:       promptStdout(),
 		}
 		index, _, err := selectPrompt.Run()
 		if err != nil {
 			return menuItem{}, err
 		}
-		if list[index].IsWorktree && !list[index].Available {
-			cursorPos = nextAvailableIndex(list, index)
-			continue
-		}
 		return items[index], nil
 	}
 }
 
-func promptWorktreeAction(wt worktreeInfo, baseRef string, allowDelete bool, deleteReason string) (string, error) {
+func promptWorktreeAction(wt worktreeInfo, baseRef string, allowDelete bool, deleteReason string, available bool, lockInfo lockPayloadData, lockFound bool) (string, error) {
 	displayBase := shortRef(baseRef)
 	deleteLabel := "Delete worktree"
 	if !allowDelete && deleteReason != "" {
 		deleteLabel = fmt.Sprintf("%s (%s)", deleteLabel, deleteReason)
 	}
+	forceLabel := "Force unlock"
+	if !available {
+		if lockFound && lockInfo.PID > 0 {
+			forceLabel = fmt.Sprintf("Force unlock (PID %d)", lockInfo.PID)
+		} else {
+			forceLabel = "Force unlock (PID unknown)"
+		}
+	}
 	items := []actionItem{
-		{Kind: "use", Label: fmt.Sprintf("Use (%s)", wt.Branch)},
-		{Kind: "use_new_branch", Label: fmt.Sprintf("Use and checkout new branch from %s", displayBase)},
-		{Kind: "use_existing_branch", Label: "Use and checkout existing branch"},
-		{Kind: "delete", Label: deleteLabel, Disabled: !allowDelete},
+		{Kind: "use", Label: fmt.Sprintf("Use (%s)", wt.Branch), Disabled: !available},
+		{Kind: "use_new_branch", Label: fmt.Sprintf("Checkout new branch from (%s)", displayBase), Disabled: !available},
+		{Kind: "use_existing_branch", Label: "Choose an existing branch", Disabled: !available},
+		{Kind: "open_shell", Label: "Open shell here (no lock)"},
+		{Kind: "divider", Label: "──────────", Disabled: true},
+		{Kind: "delete", Label: deleteLabel, Disabled: !allowDelete || !available},
+		{Kind: "force_unlock", Label: forceLabel, Disabled: available},
 		{Kind: "back", Label: "Back"},
 	}
 
@@ -669,6 +714,7 @@ func promptWorktreeAction(wt worktreeInfo, baseRef string, allowDelete bool, del
 			Templates:    templates,
 			Size:         min(len(items), 6),
 			HideSelected: true,
+			Stdout:       promptStdout(),
 		}
 		index, _, err := selectPrompt.Run()
 		if err != nil {
@@ -676,6 +722,9 @@ func promptWorktreeAction(wt worktreeInfo, baseRef string, allowDelete bool, del
 		}
 		chosen := items[index]
 		if chosen.Disabled {
+			if chosen.Kind == "divider" {
+				continue
+			}
 			if deleteReason != "" {
 				fmt.Fprintln(os.Stdout, deleteReason)
 			} else {
@@ -700,7 +749,10 @@ func printBanner() {
 }
 
 func promptTaskTitle() (string, error) {
-	prompt := promptui.Prompt{Label: "Task title"}
+	prompt := promptui.Prompt{
+		Label:  "Task title",
+		Stdout: promptStdout(),
+	}
 	value, err := prompt.Run()
 	if err != nil {
 		return "", err
@@ -880,7 +932,10 @@ func createWorktree(repoRoot string, gitPath string) (string, string, error) {
 
 func promptBranchName(baseRef string) (string, error) {
 	label := fmt.Sprintf("New branch name (from %s)", baseRef)
-	prompt := promptui.Prompt{Label: label}
+	prompt := promptui.Prompt{
+		Label:  label,
+		Stdout: promptStdout(),
+	}
 	value, err := prompt.Run()
 	if err != nil {
 		return "", err
@@ -911,6 +966,7 @@ func promptExistingBranch(branches []string) (string, error) {
 		Templates:    templates,
 		Size:         min(len(items), 10),
 		HideSelected: true,
+		Stdout:       promptStdout(),
 		Searcher: func(input string, index int) bool {
 			branch := strings.ToLower(items[index].Label)
 			query := strings.ToLower(strings.TrimSpace(input))
@@ -937,6 +993,27 @@ func defaultBaseRef(repoRoot string, gitPath string) string {
 		return ref
 	}
 	return "HEAD"
+}
+
+func gitFetch(repoRoot string, gitPath string) error {
+	cmd := exec.Command(gitPath, "fetch")
+	cmd.Dir = repoRoot
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
+	return cmd.Run()
+}
+
+func runShellInDir(dir string) error {
+	shell := strings.TrimSpace(os.Getenv("SHELL"))
+	if shell == "" {
+		shell = "/bin/sh"
+	}
+	cmd := exec.Command(shell)
+	cmd.Dir = dir
+	cmd.Stdin = os.Stdin
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
+	return cmd.Run()
 }
 
 func listLocalBranches(repoRoot string, gitPath string) ([]string, error) {
@@ -1141,6 +1218,21 @@ func worktreeLockPath(repoRoot string, worktreePath string) (string, error) {
 	return filepath.Join(lockDir, worktreeID+".lock"), nil
 }
 
+func worktreeLockInfo(repoRoot string, worktreePath string) (lockPayloadData, bool, error) {
+	lockPath, err := worktreeLockPath(repoRoot, worktreePath)
+	if err != nil {
+		return lockPayloadData{}, false, err
+	}
+	payload, err := readLockPayload(lockPath)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return lockPayloadData{}, false, nil
+		}
+		return lockPayloadData{}, false, err
+	}
+	return payload, true, nil
+}
+
 func worktreeLastUsedPath(repoRoot string, worktreePath string) (string, error) {
 	worktreeID, err := worktreeID(repoRoot, worktreePath)
 	if err != nil {
@@ -1289,6 +1381,7 @@ func promptSetupMenu() (string, error) {
 		Templates:    templates,
 		Size:         min(len(items), 6),
 		HideSelected: true,
+		Stdout:       promptStdout(),
 	}
 	index, _, err := selectPrompt.Run()
 	if err != nil {
@@ -1305,6 +1398,7 @@ func promptAgentCommand(current string) (string, error) {
 	prompt := promptui.Prompt{
 		Label:   "AI agent command",
 		Default: current,
+		Stdout:  promptStdout(),
 	}
 	value, err := prompt.Run()
 	if err != nil {
@@ -1358,4 +1452,30 @@ func configPath() (string, error) {
 		return "", errors.New("HOME not set")
 	}
 	return filepath.Join(home, ".wtx", "config.json"), nil
+}
+
+type bellFilterWriter struct {
+	w io.Writer
+}
+
+func (b *bellFilterWriter) Write(p []byte) (int, error) {
+	if bytes.IndexByte(p, '\a') == -1 {
+		if _, err := b.w.Write(p); err != nil {
+			return 0, err
+		}
+		return len(p), nil
+	}
+	filtered := bytes.ReplaceAll(p, []byte{'\a'}, nil)
+	if _, err := b.w.Write(filtered); err != nil {
+		return 0, err
+	}
+	return len(p), nil
+}
+
+func (b *bellFilterWriter) Close() error {
+	return nil
+}
+
+func promptStdout() io.WriteCloser {
+	return &bellFilterWriter{w: os.Stdout}
 }
