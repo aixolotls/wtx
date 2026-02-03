@@ -89,6 +89,19 @@ func run(args []string) error {
 		agentCmd = defaultAgentCommand
 	}
 
+	if agentCmd == "cd" {
+		shellPath := strings.TrimSpace(os.Getenv("SHELL"))
+		if shellPath == "" {
+			shellPath = "/bin/sh"
+		}
+		cmd := exec.Command(shellPath)
+		cmd.Dir = lock.WorktreePath
+		cmd.Stdin = os.Stdin
+		cmd.Stdout = os.Stdout
+		cmd.Stderr = os.Stderr
+		return cmd.Run()
+	}
+
 	cmd := exec.Command("/bin/sh", "-c", agentCmd)
 	cmd.Dir = lock.WorktreePath
 	cmd.Stdin = os.Stdin
