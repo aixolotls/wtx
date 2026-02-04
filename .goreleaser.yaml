@@ -9,7 +9,7 @@ builds:
     main: .
     binary: wtx
     ldflags:
-      - -s -w -X main.version={{ .Version }}
+      - -s -w -X main.version={{ .Commit }}
     goos:
       - darwin
       - linux
@@ -32,3 +32,8 @@ checksum:
 
 changelog:
   skip: true
+
+release:
+  tag: latest
+  name_template: "latest"
+  replace_existing_artifacts: true

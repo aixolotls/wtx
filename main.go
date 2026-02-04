@@ -49,12 +49,17 @@ func run(args []string) error {
 	if subcommand == "check" {
 		return checkForUpdates()
 	}
+	if subcommand == "update" {
+		return runUpdate()
+	}
 
+	updateCh := startUpdateCheck()
 	repoInfo, ok := detectRepoInfo()
 	if !ok {
 		if os.Getenv("TERM_PROGRAM") == "iTerm.app" {
 			setITermGrayTab()
 		}
+		maybePrintUpdate(updateCh)
 		return nil
 	}
 
@@ -68,6 +73,7 @@ func run(args []string) error {
 		if os.Getenv("TERM_PROGRAM") == "iTerm.app" {
 			setITermGrayTab()
 		}
+		maybePrintUpdate(updateCh)
 		return nil
 	}
 
@@ -86,6 +92,7 @@ func run(args []string) error {
 	defer lock.Release()
 
 	fmt.Fprintln(os.Stdout, "using worktree at", lock.WorktreePath)
+	maybePrintUpdate(updateCh)
 
 	setTitle(title)
 	if lock.ITermBlue {
@@ -119,7 +126,7 @@ func run(args []string) error {
 }
 
 func usageError() error {
-	fmt.Fprintln(os.Stderr, "usage: wtx [-d] [setup|version|check]")
+	fmt.Fprintln(os.Stderr, "usage: wtx [-d] [setup|version|check|update]")
 	return errors.New("invalid arguments")
 }
 
@@ -148,7 +155,7 @@ func parseArgs(args []string) (bool, string, error) {
 				return false, "", usageError()
 			}
 			subcommand = "setup"
-		case "version", "check":
+		case "version", "check", "update":
 			if subcommand != "" {
 				return false, "", usageError()
 			}
@@ -1565,7 +1572,8 @@ func promptStdout() io.WriteCloser {
 }
 
 type releaseInfo struct {
-	TagName string `json:"tag_name"`
+	TagName          string `json:"tag_name"`
+	TargetCommitish  string `json:"target_commitish"`
 }
 
 func checkForUpdates() error {
@@ -1573,89 +1581,121 @@ func checkForUpdates() error {
 		fmt.Fprintln(os.Stdout, "wtx version: dev (no update check for dev builds)")
 		return nil
 	}
-	latest, err := fetchLatestReleaseTag()
+	latestTag, latestCommit, err := fetchLatestRelease()
 	if err != nil {
 		return err
 	}
-	if latest == "" {
+	if latestCommit == "" {
 		return errors.New("unable to determine latest release")
 	}
-	switch compareSemver(version, latest) {
-	case 0:
-		fmt.Fprintf(os.Stdout, "wtx is up to date (%s)\n", version)
-	case 1:
-		fmt.Fprintf(os.Stdout, "wtx is ahead of latest release (%s > %s)\n", version, latest)
-	default:
-		fmt.Fprintf(os.Stdout, "update available: %s -> %s\n", version, latest)
-		fmt.Fprintln(os.Stdout, "Install the latest with: curl -fsSL https://raw.githubusercontent.com/mrbonezy/wtx/main/scripts/install.sh | sh")
+	if version == latestCommit {
+		fmt.Fprintf(os.Stdout, "wtx is up to date (%s)\n", shortVersion(version))
+		return nil
 	}
+	fmt.Fprintf(os.Stdout, "update available: %s -> %s (%s)\n", shortVersion(version), shortVersion(latestCommit), latestTag)
+	fmt.Fprintln(os.Stdout, "Install the latest with: curl -fsSL https://raw.githubusercontent.com/mrbonezy/wtx/main/scripts/install.sh | sh")
 	return nil
 }
 
-func fetchLatestReleaseTag() (string, error) {
-	req, err := http.NewRequest("GET", "https://api.github.com/repos/mrbonezy/wtx/releases/latest", nil)
+type updateStatus struct {
+	LatestTag    string
+	LatestCommit string
+	Err          error
+}
+
+func startUpdateCheck() <-chan updateStatus {
+	if version == "dev" {
+		return nil
+	}
+	ch := make(chan updateStatus, 1)
+	go func() {
+		tag, commit, err := fetchLatestRelease()
+		if err != nil {
+			ch <- updateStatus{Err: err}
+			return
+		}
+		if commit == "" {
+			ch <- updateStatus{Err: errors.New("missing latest commit")}
+			return
+		}
+		if commit != version {
+			ch <- updateStatus{LatestTag: tag, LatestCommit: commit}
+		}
+	}()
+	return ch
+}
+
+func maybePrintUpdate(ch <-chan updateStatus) {
+	if ch == nil {
+		return
+	}
+	select {
+	case status := <-ch:
+		if status.Err != nil {
+			if debugEnabled() {
+				fmt.Fprintln(os.Stderr, "wtx update check failed:", status.Err)
+			}
+			return
+		}
+		if status.LatestCommit == "" || status.LatestCommit == version {
+			return
+		}
+		fmt.Fprintf(os.Stdout, "\nupdate available: %s -> %s (%s)\n", shortVersion(version), shortVersion(status.LatestCommit), status.LatestTag)
+		fmt.Fprintln(os.Stdout, "Run: wtx update")
+	default:
+	}
+}
+
+func fetchLatestRelease() (string, string, error) {
+	req, err := http.NewRequest("GET", "https://api.github.com/repos/mrbonezy/wtx/releases/tags/latest", nil)
 	if err != nil {
-		return "", err
+		return "", "", err
 	}
 	req.Header.Set("Accept", "application/vnd.github+json")
 	req.Header.Set("User-Agent", "wtx")
 	client := &http.Client{Timeout: 5 * time.Second}
 	resp, err := client.Do(req)
 	if err != nil {
-		return "", err
+		return "", "", err
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
-		return "", fmt.Errorf("unexpected status from GitHub: %s", resp.Status)
+		return "", "", fmt.Errorf("unexpected status from GitHub: %s", resp.Status)
 	}
 	var info releaseInfo
 	if err := json.NewDecoder(resp.Body).Decode(&info); err != nil {
-		return "", err
+		return "", "", err
 	}
-	return strings.TrimSpace(info.TagName), nil
-}
-
-func compareSemver(current string, latest string) int {
-	c := parseSemver(current)
-	l := parseSemver(latest)
-	if c == nil || l == nil {
-		return strings.Compare(current, latest)
-	}
-	for i := 0; i < 3; i++ {
-		if c[i] > l[i] {
-			return 1
-		}
-		if c[i] < l[i] {
-			return -1
-		}
-	}
-	return 0
-}
-
-func parseSemver(value string) []int {
-	value = strings.TrimSpace(value)
-	value = strings.TrimPrefix(value, "v")
-	parts := strings.Split(value, ".")
-	if len(parts) < 3 {
-		return nil
-	}
-	out := make([]int, 3)
-	for i := 0; i < 3; i++ {
-		n := 0
-		for _, ch := range parts[i] {
-			if ch < '0' || ch > '9' {
-				return nil
-			}
-			n = n*10 + int(ch-'0')
-		}
-		out[i] = n
-	}
-	return out
+	return strings.TrimSpace(info.TagName), strings.TrimSpace(info.TargetCommitish), nil
 }
 
 func versionString() string {
 	if version == "" {
 		return "wtx dev"
 	}
-	return fmt.Sprintf("wtx %s", version)
+	return fmt.Sprintf("wtx %s", shortVersion(version))
+}
+
+func shortVersion(value string) string {
+	value = strings.TrimSpace(value)
+	if len(value) > 7 {
+		return value[:7]
+	}
+	return value
+}
+
+func runUpdate() error {
+	installer := "https://raw.githubusercontent.com/mrbonezy/wtx/main/scripts/install.sh"
+	var cmd *exec.Cmd
+	if _, err := exec.LookPath("curl"); err == nil {
+		cmd = exec.Command("/bin/sh", "-c", fmt.Sprintf("curl -fsSL %s | sh", installer))
+	} else if _, err := exec.LookPath("wget"); err == nil {
+		cmd = exec.Command("/bin/sh", "-c", fmt.Sprintf("wget -qO- %s | sh", installer))
+	} else {
+		return errors.New("curl or wget required to update")
+	}
+	cmd.Stdin = os.Stdin
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
+	return cmd.Run()
 }
