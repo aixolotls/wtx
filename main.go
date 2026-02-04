@@ -16,6 +16,7 @@ import (
 	"os/signal"
 	"os/user"
 	"path/filepath"
+	"runtime/debug"
 	"sort"
 	"strings"
 	"sync"
@@ -1571,45 +1572,40 @@ func promptStdout() io.WriteCloser {
 	return &bellFilterWriter{w: os.Stdout}
 }
 
-type releaseInfo struct {
-	TagName          string `json:"tag_name"`
-	TargetCommitish  string `json:"target_commitish"`
-}
-
 func checkForUpdates() error {
-	if version == "dev" {
+	current := resolvedVersion()
+	if current == "" {
 		fmt.Fprintln(os.Stdout, "wtx version: dev (no update check for dev builds)")
 		return nil
 	}
-	latestTag, latestCommit, err := fetchLatestRelease()
+	latestCommit, err := fetchLatestCommit()
 	if err != nil {
 		return err
 	}
 	if latestCommit == "" {
 		return errors.New("unable to determine latest release")
 	}
-	if version == latestCommit {
-		fmt.Fprintf(os.Stdout, "wtx is up to date (%s)\n", shortVersion(version))
+	if current == latestCommit {
+		fmt.Fprintf(os.Stdout, "wtx is up to date (%s)\n", shortVersion(current))
 		return nil
 	}
-	fmt.Fprintf(os.Stdout, "update available: %s -> %s (%s)\n", shortVersion(version), shortVersion(latestCommit), latestTag)
-	fmt.Fprintln(os.Stdout, "Install the latest with: curl -fsSL https://raw.githubusercontent.com/mrbonezy/wtx/main/scripts/install.sh | sh")
+	fmt.Fprintf(os.Stdout, "update available: %s -> %s\n", shortVersion(current), shortVersion(latestCommit))
+	fmt.Fprintln(os.Stdout, "Run: go install github.com/mrbonezy/wtx@latest")
 	return nil
 }
 
 type updateStatus struct {
-	LatestTag    string
 	LatestCommit string
 	Err          error
 }
 
 func startUpdateCheck() <-chan updateStatus {
-	if version == "dev" {
+	if resolvedVersion() == "" {
 		return nil
 	}
 	ch := make(chan updateStatus, 1)
 	go func() {
-		tag, commit, err := fetchLatestRelease()
+		commit, err := fetchLatestCommit()
 		if err != nil {
 			ch <- updateStatus{Err: err}
 			return
@@ -1618,8 +1614,8 @@ func startUpdateCheck() <-chan updateStatus {
 			ch <- updateStatus{Err: errors.New("missing latest commit")}
 			return
 		}
-		if commit != version {
-			ch <- updateStatus{LatestTag: tag, LatestCommit: commit}
+		if commit != resolvedVersion() {
+			ch <- updateStatus{LatestCommit: commit}
 		}
 	}()
 	return ch
@@ -1637,43 +1633,46 @@ func maybePrintUpdate(ch <-chan updateStatus) {
 			}
 			return
 		}
-		if status.LatestCommit == "" || status.LatestCommit == version {
+		if status.LatestCommit == "" || status.LatestCommit == resolvedVersion() {
 			return
 		}
-		fmt.Fprintf(os.Stdout, "\nupdate available: %s -> %s (%s)\n", shortVersion(version), shortVersion(status.LatestCommit), status.LatestTag)
+		fmt.Fprintf(os.Stdout, "\nupdate available: %s -> %s\n", shortVersion(resolvedVersion()), shortVersion(status.LatestCommit))
 		fmt.Fprintln(os.Stdout, "Run: wtx update")
 	default:
 	}
 }
 
-func fetchLatestRelease() (string, string, error) {
-	req, err := http.NewRequest("GET", "https://api.github.com/repos/mrbonezy/wtx/releases/tags/latest", nil)
+func fetchLatestCommit() (string, error) {
+	req, err := http.NewRequest("GET", "https://api.github.com/repos/mrbonezy/wtx/commits/main", nil)
 	if err != nil {
-		return "", "", err
+		return "", err
 	}
 	req.Header.Set("Accept", "application/vnd.github+json")
 	req.Header.Set("User-Agent", "wtx")
 	client := &http.Client{Timeout: 5 * time.Second}
 	resp, err := client.Do(req)
 	if err != nil {
-		return "", "", err
+		return "", err
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
-		return "", "", fmt.Errorf("unexpected status from GitHub: %s", resp.Status)
+		return "", fmt.Errorf("unexpected status from GitHub: %s", resp.Status)
 	}
-	var info releaseInfo
-	if err := json.NewDecoder(resp.Body).Decode(&info); err != nil {
-		return "", "", err
+	var payload struct {
+		SHA string `json:"sha"`
 	}
-	return strings.TrimSpace(info.TagName), strings.TrimSpace(info.TargetCommitish), nil
+	if err := json.NewDecoder(resp.Body).Decode(&payload); err != nil {
+		return "", err
+	}
+	return strings.TrimSpace(payload.SHA), nil
 }
 
 func versionString() string {
-	if version == "" {
+	current := resolvedVersion()
+	if current == "" {
 		return "wtx dev"
 	}
-	return fmt.Sprintf("wtx %s", shortVersion(version))
+	return fmt.Sprintf("wtx %s", shortVersion(current))
 }
 
 func shortVersion(value string) string {
@@ -1685,17 +1684,62 @@ func shortVersion(value string) string {
 }
 
 func runUpdate() error {
-	installer := "https://raw.githubusercontent.com/mrbonezy/wtx/main/scripts/install.sh"
 	var cmd *exec.Cmd
-	if _, err := exec.LookPath("curl"); err == nil {
-		cmd = exec.Command("/bin/sh", "-c", fmt.Sprintf("curl -fsSL %s | sh", installer))
-	} else if _, err := exec.LookPath("wget"); err == nil {
-		cmd = exec.Command("/bin/sh", "-c", fmt.Sprintf("wget -qO- %s | sh", installer))
-	} else {
-		return errors.New("curl or wget required to update")
-	}
+	cmd = exec.Command("go", "install", "github.com/mrbonezy/wtx@latest")
 	cmd.Stdin = os.Stdin
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
 	return cmd.Run()
+}
+
+func resolvedVersion() string {
+	if version != "" && version != "dev" {
+		return version
+	}
+	rev, _ := buildVCSRevision()
+	return rev
+}
+
+func buildVCSRevision() (string, bool) {
+	info, ok := debug.ReadBuildInfo()
+	if !ok {
+		return "", false
+	}
+	var rev string
+	modified := false
+	for _, setting := range info.Settings {
+		switch setting.Key {
+		case "vcs.revision":
+			rev = setting.Value
+		case "vcs.modified":
+			modified = setting.Value == "true"
+		}
+	}
+	if rev == "" {
+		if parsed := parsePseudoVersion(info.Main.Version); parsed != "" {
+			return parsed, true
+		}
+		return "", false
+	}
+	if modified {
+		return rev + "-dirty", true
+	}
+	return rev, true
+}
+
+func parsePseudoVersion(value string) string {
+	parts := strings.Split(value, "-")
+	if len(parts) < 3 {
+		return ""
+	}
+	last := parts[len(parts)-1]
+	if len(last) < 7 {
+		return ""
+	}
+	for _, ch := range last {
+		if (ch < '0' || ch > '9') && (ch < 'a' || ch > 'f') {
+			return ""
+		}
+	}
+	return last
 }

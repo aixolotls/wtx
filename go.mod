@@ -1,4 +1,4 @@
-module wtx
+module github.com/mrbonezy/wtx
 
 go 1.21
 

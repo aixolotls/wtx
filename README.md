@@ -5,7 +5,7 @@
 ## Install
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/mrbonezy/wtx/main/scripts/install.sh | sh
+go install github.com/mrbonezy/wtx@latest
 ```
 
 ## Usage
