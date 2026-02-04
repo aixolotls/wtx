@@ -132,6 +132,8 @@ func usageError() error {
 }
 
 var debugFlag bool
+var debugWriter io.Writer
+var debugOnce sync.Once
 
 func setDebug(enabled bool) {
 	debugFlag = enabled
@@ -139,6 +141,28 @@ func setDebug(enabled bool) {
 
 func debugEnabled() bool {
 	return debugFlag
+}
+
+func debugLogf(format string, args ...any) {
+	if !debugEnabled() {
+		return
+	}
+	debugOnce.Do(func() {
+		path := strings.TrimSpace(os.Getenv("WTX_DEBUG_LOG"))
+		if path == "" {
+			path = "/tmp/wtx-debug.log"
+		}
+		file, err := os.OpenFile(path, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o600)
+		if err != nil {
+			debugWriter = os.Stderr
+			return
+		}
+		debugWriter = file
+	})
+	if debugWriter == nil {
+		debugWriter = os.Stderr
+	}
+	fmt.Fprintf(debugWriter, format+"\n", args...)
 }
 
 func parseArgs(args []string) (bool, string, error) {
@@ -251,6 +275,11 @@ type menuItem struct {
 	Path       string
 	LockID     string
 	Exists     bool
+	PRLabel    string
+	PRCI       string
+	PRApproved string
+	PRTitle    string
+	PRURL      string
 }
 
 type actionItem struct {
@@ -271,6 +300,11 @@ type menuItemView struct {
 	LastUsedPad int
 	Kind        menuItemKind
 	LockID      string
+	PRLabel     string
+	PRCI        string
+	PRApproved  string
+	PRDetails   string
+	PRPad       int
 }
 
 type worktreeLock struct {
@@ -285,6 +319,52 @@ type worktreeLock struct {
 	stopCh       chan struct{}
 	stopOnce     sync.Once
 	lostOnce     sync.Once
+}
+
+type prFetchStatus int
+
+const (
+	prFetchPending prFetchStatus = iota
+	prFetchReady
+	prFetchMissingGh
+	prFetchUnauthed
+	prFetchError
+)
+
+type prFetchResult struct {
+	Status prFetchStatus
+	PRs    map[string]prInfo
+	Err    error
+}
+
+type prInfo struct {
+	Number         int
+	Title          string
+	URL            string
+	ReviewDecision string
+	CIStatus       ciStatus
+}
+
+type ciStatus int
+
+const (
+	ciStatusNA ciStatus = iota
+	ciStatusSuccess
+	ciStatusFailure
+)
+
+type ghPR struct {
+	Number            int       `json:"number"`
+	Title             string    `json:"title"`
+	URL               string    `json:"url"`
+	HeadRefName       string    `json:"headRefName"`
+	ReviewDecision    string    `json:"reviewDecision"`
+	StatusCheckRollup []ghCheck `json:"statusCheckRollup"`
+}
+
+type ghCheck struct {
+	Conclusion string `json:"conclusion"`
+	Status     string `json:"status"`
 }
 
 func detectRepoInfo() (repoInfo, bool) {
@@ -329,6 +409,195 @@ func gitOutputInDir(dir string, path string, args ...string) (string, error) {
 	return strings.TrimSpace(string(output)), nil
 }
 
+func startPRFetch(repoRoot string) <-chan prFetchResult {
+	ch := make(chan prFetchResult, 1)
+	go func() {
+		debugLogf("wtx: starting gh PR fetch in %s", repoRoot)
+		ghPath, err := exec.LookPath("gh")
+		if err != nil {
+			debugLogf("wtx: gh not found in PATH")
+			ch <- prFetchResult{Status: prFetchMissingGh}
+			return
+		}
+		prs, output, err := fetchPRs(repoRoot, ghPath)
+		if err != nil {
+			if isGhAuthError(output) {
+				debugLogf("wtx: gh not authenticated: %s", strings.TrimSpace(output))
+				ch <- prFetchResult{Status: prFetchUnauthed}
+				return
+			}
+			if output != "" {
+				err = fmt.Errorf("%w: %s", err, strings.TrimSpace(output))
+			}
+			debugLogf("wtx: gh PR fetch error: %v", err)
+			ch <- prFetchResult{Status: prFetchError, Err: err}
+			return
+		}
+		debugLogf("wtx: gh PR fetch success: %d PRs", len(prs))
+		ch <- prFetchResult{Status: prFetchReady, PRs: prs}
+	}()
+	return ch
+}
+
+func fetchPRs(repoRoot string, ghPath string) (map[string]prInfo, string, error) {
+	cmd := exec.Command(ghPath, "pr", "list", "--state", "open", "--json", "number,title,url,headRefName,reviewDecision,statusCheckRollup", "--limit", "200")
+	cmd.Dir = repoRoot
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		return nil, string(output), err
+	}
+	var prs []ghPR
+	if err := json.Unmarshal(output, &prs); err != nil {
+		return nil, "", err
+	}
+	result := make(map[string]prInfo, len(prs))
+	for _, pr := range prs {
+		info := prInfo{
+			Number:         pr.Number,
+			Title:          pr.Title,
+			URL:            pr.URL,
+			ReviewDecision: pr.ReviewDecision,
+			CIStatus:       computeCIStatus(pr.StatusCheckRollup),
+		}
+		result[normalizeBranchName(pr.HeadRefName)] = info
+		result[pr.HeadRefName] = info
+	}
+	return result, "", nil
+}
+
+func computeCIStatus(checks []ghCheck) ciStatus {
+	if len(checks) == 0 {
+		return ciStatusNA
+	}
+	pending := false
+	for _, check := range checks {
+		conclusion := strings.ToUpper(strings.TrimSpace(check.Conclusion))
+		status := strings.ToUpper(strings.TrimSpace(check.Status))
+		if conclusion == "" {
+			if status != "" && status != "COMPLETED" {
+				pending = true
+				continue
+			}
+			pending = true
+			continue
+		}
+		switch conclusion {
+		case "SUCCESS", "SKIPPED", "NEUTRAL":
+			continue
+		default:
+			return ciStatusFailure
+		}
+	}
+	if pending {
+		return ciStatusNA
+	}
+	return ciStatusSuccess
+}
+
+func ciEmoji(status ciStatus) string {
+	switch status {
+	case ciStatusSuccess:
+		return "✅"
+	case ciStatusFailure:
+		return "❌"
+	default:
+		return "N/A"
+	}
+}
+
+func approvedEmoji(reviewDecision string) string {
+	if strings.EqualFold(strings.TrimSpace(reviewDecision), "approved") {
+		return "✅"
+	}
+	return "⬜"
+}
+
+func formatLink(label string, url string) string {
+	if url == "" {
+		return label
+	}
+	return "\x1b]8;;" + url + "\x07" + label + "\x1b]8;;\x07"
+}
+
+func formatPRInfo(branch string, prState prFetchResult) (string, string, string, string, string) {
+	switch prState.Status {
+	case prFetchPending:
+		return "PR: ...", "CI: N/A", "Approved: ⬜", "Title: ...", ""
+	case prFetchMissingGh:
+		return "PR: N/A", "CI: N/A", "Approved: ⬜", "", ""
+	case prFetchUnauthed:
+		return "PR: N/A", "CI: N/A", "Approved: ⬜", "", ""
+	case prFetchError:
+		return "PR: N/A", "CI: N/A", "Approved: ⬜", "", ""
+	case prFetchReady:
+		normBranch := normalizeBranchName(branch)
+		if pr, ok := prState.PRs[branch]; ok {
+			title := truncateText(pr.Title, 40)
+			return fmt.Sprintf("PR: #%d", pr.Number),
+				"CI: "+ciEmoji(pr.CIStatus),
+				"Approved: "+approvedEmoji(pr.ReviewDecision),
+				"Title: "+title,
+				pr.URL
+		}
+		if pr, ok := prState.PRs[normBranch]; ok {
+			title := truncateText(pr.Title, 40)
+			return fmt.Sprintf("PR: #%d", pr.Number),
+				"CI: "+ciEmoji(pr.CIStatus),
+				"Approved: "+approvedEmoji(pr.ReviewDecision),
+				"Title: "+title,
+				pr.URL
+		}
+		if debugEnabled() {
+			debugLogf("wtx: no PR match for branch: %q normalized: %q", branch, normBranch)
+		}
+		return "PR: no", "CI: N/A", "Approved: ⬜", "", ""
+	default:
+		return "PR: N/A", "CI: N/A", "Approved: ⬜", "", ""
+	}
+}
+
+func normalizeBranchName(name string) string {
+	trimmed := strings.TrimSpace(name)
+	trimmed = strings.TrimPrefix(trimmed, "refs/heads/")
+	trimmed = strings.TrimPrefix(trimmed, "refs/remotes/")
+	trimmed = strings.TrimPrefix(trimmed, "origin/")
+	return trimmed
+}
+
+func isGhAuthError(output string) bool {
+	msg := strings.ToLower(output)
+	return strings.Contains(msg, "not logged into any github hosts") ||
+		strings.Contains(msg, "to authenticate") ||
+		strings.Contains(msg, "authentication") ||
+		strings.Contains(msg, "authorize") ||
+		strings.Contains(msg, "oauth")
+}
+
+func truncateText(input string, max int) string {
+	if max <= 0 {
+		return ""
+	}
+	if len(input) <= max {
+		return input
+	}
+	if max <= 3 {
+		return input[:max]
+	}
+	return input[:max-3] + "..."
+}
+
+func joinNonEmpty(sep string, parts []string) string {
+	filtered := make([]string, 0, len(parts))
+	for _, part := range parts {
+		part = strings.TrimSpace(part)
+		if part == "" {
+			continue
+		}
+		filtered = append(filtered, part)
+	}
+	return strings.Join(filtered, sep)
+}
+
 func selectWorktree(info repoInfo) (*selectionResult, error) {
 	gitPath, err := exec.LookPath("git")
 	if err != nil {
@@ -338,6 +607,10 @@ func selectWorktree(info repoInfo) (*selectionResult, error) {
 	printBanner()
 	setTitle(fmt.Sprintf("[%s]", info.Name))
 	baseRef := defaultBaseRef(info.Path, gitPath)
+	prFetchCh := startPRFetch(info.Path)
+	prState := prFetchResult{Status: prFetchPending}
+	prNoticePrinted := false
+	prReadyPrinted := false
 
 	for {
 		worktrees, err := listWorktrees(info.Path, gitPath)
@@ -361,7 +634,37 @@ func selectWorktree(info repoInfo) (*selectionResult, error) {
 			options = append(options, worktreeOption{Info: wt, Available: available, Exists: exists})
 		}
 
-		menuItems, err := buildMenuItems(info.Path, options)
+		if prFetchCh != nil {
+			select {
+			case prState = <-prFetchCh:
+				prFetchCh = nil
+			default:
+			}
+		}
+		if prState.Status == prFetchPending && prFetchCh != nil {
+			select {
+			case prState = <-prFetchCh:
+				prFetchCh = nil
+			case <-time.After(150 * time.Millisecond):
+			}
+		}
+		if prState.Status == prFetchMissingGh && !prNoticePrinted {
+			fmt.Fprintln(os.Stderr, "wtx: gh not installed; PR/CI/Approved info unavailable")
+			prNoticePrinted = true
+		}
+		if prState.Status == prFetchUnauthed && !prNoticePrinted {
+			fmt.Fprintln(os.Stderr, "wtx: gh not authenticated; PR/CI/Approved info unavailable")
+			prNoticePrinted = true
+		}
+		if prState.Status == prFetchReady && debugEnabled() && !prReadyPrinted {
+			debugLogf("wtx: gh PR fetch ok; open PRs: %d", len(prState.PRs))
+			prReadyPrinted = true
+		}
+		if prState.Status == prFetchError && debugEnabled() && prState.Err != nil {
+			debugLogf("wtx: gh PR fetch failed: %v", prState.Err)
+		}
+
+		menuItems, err := buildMenuItems(info.Path, options, prState)
 		if err != nil {
 			return nil, err
 		}
@@ -369,7 +672,14 @@ func selectWorktree(info repoInfo) (*selectionResult, error) {
 		if err != nil {
 			return nil, err
 		}
-
+		if prFetchCh != nil && prState.Status == prFetchPending {
+			select {
+			case prState = <-prFetchCh:
+				prFetchCh = nil
+				continue
+			default:
+			}
+		}
 		switch chosen.Kind {
 		case menuAddWorktree:
 			newPath, newBranch, err := createWorktree(info.Path, gitPath)
@@ -623,8 +933,11 @@ func humanizeDuration(d time.Duration) string {
 	return fmt.Sprintf("%dmo ago", months)
 }
 
-func buildMenuItems(repoRoot string, options []worktreeOption) ([]menuItem, error) {
+func buildMenuItems(repoRoot string, options []worktreeOption, prState prFetchResult) ([]menuItem, error) {
 	items := make([]menuItem, 0, len(options)+2)
+	if debugEnabled() {
+		debugLogf("wtx: buildMenuItems prState=%v prCount=%d", prState.Status, len(prState.PRs))
+	}
 	for _, option := range options {
 		lastUsedAt, lastUsedLabel, err := worktreeLastUsed(repoRoot, option.Info.Path)
 		if err != nil {
@@ -642,6 +955,10 @@ func buildMenuItems(repoRoot string, options []worktreeOption) ([]menuItem, erro
 			status = "in use"
 		}
 		lastUsedText := "last used: " + lastUsedLabel
+		prLabel, prCI, prApproved, prTitle, prURL := formatPRInfo(option.Info.Branch, prState)
+		if debugEnabled() {
+			debugLogf("wtx: branch=%q prLabel=%q prTitle=%q", option.Info.Branch, prLabel, prTitle)
+		}
 		items = append(items, menuItem{
 			Kind:       menuWorktree,
 			Label:      label,
@@ -654,6 +971,11 @@ func buildMenuItems(repoRoot string, options []worktreeOption) ([]menuItem, erro
 			Path:       option.Info.Path,
 			LockID:     lockID,
 			Exists:     option.Exists,
+			PRLabel:    prLabel,
+			PRCI:       prCI,
+			PRApproved: prApproved,
+			PRTitle:    prTitle,
+			PRURL:      prURL,
 		})
 	}
 	sort.SliceStable(items, func(i, j int) bool {
@@ -682,6 +1004,11 @@ func promptSelectMenu(repoName string, items []menuItem) (menuItem, error) {
 	lastUsedPad := maxLastUsedLen(items)
 	list := make([]menuItemView, 0, len(items))
 	for _, item := range items {
+		prLabel := item.PRLabel
+		if item.PRURL != "" {
+			prLabel = formatLink(item.PRLabel, item.PRURL)
+		}
+		prDetails := joinNonEmpty("  ", []string{prLabel, item.PRCI, item.PRApproved, item.PRTitle})
 		list = append(list, menuItemView{
 			Label:       item.Label,
 			Branch:      item.Worktree.Branch,
@@ -694,6 +1021,10 @@ func promptSelectMenu(repoName string, items []menuItem) (menuItem, error) {
 			LastUsedPad: lastUsedPad,
 			Kind:        item.Kind,
 			LockID:      item.LockID,
+			PRLabel:     item.PRLabel,
+			PRCI:        item.PRCI,
+			PRApproved:  item.PRApproved,
+			PRDetails:   prDetails,
 		})
 	}
 
@@ -702,9 +1033,9 @@ func promptSelectMenu(repoName string, items []menuItem) (menuItem, error) {
 		details = "{{ if .IsWorktree }}{{ if .Path }}{{ \"Path: \" | faint }}{{ .Path | faint }}{{ end }}{{ if .LockID }}\n{{ \"Lock ID: \" | faint }}{{ .LockID | faint }}{{ end }}{{ end }}"
 	}
 	templates := &promptui.SelectTemplates{
-		Active:   "{{ if .IsWorktree }}{{ if .Available }}{{ cyan \"▸\" }} {{ cyan (bold (printf \"%-*s\" .BranchPad .Label)) }}  {{ printf \"%-7s\" .Status }} {{ printf \"%-*s\" .LastUsedPad .LastUsed }}{{ else }}{{ dim \"▸\" }} {{ dimBold (printf \"%-*s\" .BranchPad .Label) }}  {{ dim (printf \"%-7s %-*s\" .Status .LastUsedPad .LastUsed) }}{{ end }}{{ else }}{{ if eq .Kind 3 }}{{ dim \"▸\" }} {{ dim .Label }}{{ else }}{{ cyan \"▸\" }} {{ cyan .Label }}{{ end }}{{ end }}",
-		Inactive: "{{ if .IsWorktree }}{{ if .Available }}  {{ printf \"%-*s\" .BranchPad .Label }}  {{ printf \"%-7s\" .Status }} {{ printf \"%-*s\" .LastUsedPad .LastUsed }}{{ else }}  {{ dimBold (printf \"%-*s\" .BranchPad .Label) }}  {{ dim (printf \"%-7s %-*s\" .Status .LastUsedPad .LastUsed) }}{{ end }}{{ else }}{{ if eq .Kind 3 }}  {{ dim .Label }}{{ else }}  {{ .Label }}{{ end }}{{ end }}",
-		Selected: "{{ if .IsWorktree }}{{ if .Available }}{{ cyan \"✔\" }} {{ cyan (bold (printf \"%-*s\" .BranchPad .Label)) }}  {{ printf \"%-7s\" .Status }} {{ printf \"%-*s\" .LastUsedPad .LastUsed }}{{ else }}{{ dim \"✔\" }} {{ dimBold (printf \"%-*s\" .BranchPad .Label) }}  {{ dim (printf \"%-7s %-*s\" .Status .LastUsedPad .LastUsed) }}{{ end }}{{ else }}{{ if eq .Kind 3 }}{{ dim \"✔\" }} {{ dim .Label }}{{ else }}{{ cyan \"✔\" }} {{ cyan .Label }}{{ end }}{{ end }}",
+		Active:   "{{ if .IsWorktree }}{{ if .Available }}{{ cyan \"▸\" }} {{ cyan (bold (printf \"%-*s\" .BranchPad .Label)) }}  {{ printf \"%-7s\" .Status }} {{ .PRDetails }} {{ printf \"%-*s\" .LastUsedPad .LastUsed }}{{ else }}{{ dim \"▸\" }} {{ dimBold (printf \"%-*s\" .BranchPad .Label) }}  {{ dim (printf \"%-7s\" .Status) }} {{ dim .PRDetails }} {{ dim (printf \"%-*s\" .LastUsedPad .LastUsed) }}{{ end }}{{ else }}{{ if eq .Kind 3 }}{{ dim \"▸\" }} {{ dim .Label }}{{ else }}{{ cyan \"▸\" }} {{ cyan .Label }}{{ end }}{{ end }}",
+		Inactive: "{{ if .IsWorktree }}{{ if .Available }}  {{ printf \"%-*s\" .BranchPad .Label }}  {{ printf \"%-7s\" .Status }} {{ .PRDetails }} {{ printf \"%-*s\" .LastUsedPad .LastUsed }}{{ else }}  {{ dimBold (printf \"%-*s\" .BranchPad .Label) }}  {{ dim (printf \"%-7s\" .Status) }} {{ dim .PRDetails }} {{ dim (printf \"%-*s\" .LastUsedPad .LastUsed) }}{{ end }}{{ else }}{{ if eq .Kind 3 }}  {{ dim .Label }}{{ else }}  {{ .Label }}{{ end }}{{ end }}",
+		Selected: "{{ if .IsWorktree }}{{ if .Available }}{{ cyan \"✔\" }} {{ cyan (bold (printf \"%-*s\" .BranchPad .Label)) }}  {{ printf \"%-7s\" .Status }} {{ .PRDetails }} {{ printf \"%-*s\" .LastUsedPad .LastUsed }}{{ else }}{{ dim \"✔\" }} {{ dimBold (printf \"%-*s\" .BranchPad .Label) }}  {{ dim (printf \"%-7s\" .Status) }} {{ dim .PRDetails }} {{ dim (printf \"%-*s\" .LastUsedPad .LastUsed) }}{{ end }}{{ else }}{{ if eq .Kind 3 }}{{ dim \"✔\" }} {{ dim .Label }}{{ else }}{{ cyan \"✔\" }} {{ cyan .Label }}{{ end }}{{ end }}",
 		Details:  details,
 		FuncMap:  funcMap,
 	}
