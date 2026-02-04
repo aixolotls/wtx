@@ -1585,7 +1585,7 @@ func checkForUpdates() error {
 	if latestCommit == "" {
 		return errors.New("unable to determine latest release")
 	}
-	if current == latestCommit {
+	if commitsEqual(current, latestCommit) {
 		fmt.Fprintf(os.Stdout, "wtx is up to date (%s)\n", shortVersion(current))
 		return nil
 	}
@@ -1614,7 +1614,7 @@ func startUpdateCheck() <-chan updateStatus {
 			ch <- updateStatus{Err: errors.New("missing latest commit")}
 			return
 		}
-		if commit != resolvedVersion() {
+		if !commitsEqual(commit, resolvedVersion()) {
 			ch <- updateStatus{LatestCommit: commit}
 		}
 	}()
@@ -1633,7 +1633,7 @@ func maybePrintUpdate(ch <-chan updateStatus) {
 			}
 			return
 		}
-		if status.LatestCommit == "" || status.LatestCommit == resolvedVersion() {
+		if status.LatestCommit == "" || commitsEqual(status.LatestCommit, resolvedVersion()) {
 			return
 		}
 		fmt.Fprintf(os.Stdout, "\nupdate available: %s -> %s\n", shortVersion(resolvedVersion()), shortVersion(status.LatestCommit))
@@ -1681,6 +1681,40 @@ func shortVersion(value string) string {
 		return value[:7]
 	}
 	return value
+}
+
+func commitsEqual(a string, b string) bool {
+	aa := normalizeCommit(a)
+	bb := normalizeCommit(b)
+	if aa == "" || bb == "" {
+		return a == b
+	}
+	if aa == bb {
+		return true
+	}
+	if strings.HasPrefix(aa, bb) || strings.HasPrefix(bb, aa) {
+		return true
+	}
+	return false
+}
+
+func normalizeCommit(value string) string {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return ""
+	}
+	var out strings.Builder
+	for _, ch := range value {
+		isHex := (ch >= '0' && ch <= '9') || (ch >= 'a' && ch <= 'f')
+		if !isHex {
+			break
+		}
+		out.WriteRune(ch)
+	}
+	if out.Len() < 7 {
+		return ""
+	}
+	return out.String()
 }
 
 func runUpdate() error {
