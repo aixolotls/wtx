@@ -56,7 +56,7 @@ func (r *AgentRunner) RunInWorktree(worktreePath string, branch string, lock *Wo
 		return AgentRunResult{}, err
 	}
 	clearScreen()
-	setStatusBanner(renderBanner(branch, worktreePath))
+	setDynamicWorktreeStatus(worktreePath)
 	setITermWTXBranchTab(branch)
 	if paneID != "" {
 		_ = exec.Command("tmux", "resize-pane", "-t", paneID, "-y", "1").Run()
@@ -87,7 +87,7 @@ func (r *AgentRunner) RunShellInWorktree(worktreePath string, branch string, loc
 		return AgentRunResult{}, err
 	}
 	clearScreen()
-	setStatusBanner(renderBanner(branch, worktreePath))
+	setDynamicWorktreeStatus(worktreePath)
 	setITermWTXBranchTab(branch)
 	if paneID != "" {
 		_ = exec.Command("tmux", "resize-pane", "-t", paneID, "-y", "1").Run()

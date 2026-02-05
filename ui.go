@@ -34,6 +34,8 @@ type model struct {
 	creatingBranch    string
 	deletePath        string
 	deleteBranch      string
+	unlockPath        string
+	unlockBranch      string
 	actionBranch      string
 	actionIndex       int
 	actionCreate      bool
@@ -176,6 +178,28 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.mode = modeList
 				m.deletePath = ""
 				m.deleteBranch = ""
+				m.errMsg = ""
+				return m, nil
+			}
+			return m, nil
+		}
+		if m.mode == modeUnlock {
+			switch msg.String() {
+			case "y", "Y":
+				if err := m.mgr.UnlockWorktree(m.unlockPath); err != nil {
+					m.errMsg = err.Error()
+					m.mode = modeList
+					return m, nil
+				}
+				m.mode = modeList
+				m.unlockPath = ""
+				m.unlockBranch = ""
+				m.errMsg = ""
+				return m, fetchStatusCmd(m.mgr)
+			case "n", "N", "esc":
+				m.mode = modeList
+				m.unlockPath = ""
+				m.unlockBranch = ""
 				m.errMsg = ""
 				return m, nil
 			}
@@ -457,6 +481,22 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.errMsg = ""
 				return m, nil
 			}
+		case "u":
+			if row, ok := selectedWorktree(m.status, m.listIndex); ok {
+				if isOrphanedPath(m.status, row.Path) {
+					m.errMsg = "Cannot unlock orphaned worktree."
+					return m, nil
+				}
+				if row.Available {
+					m.errMsg = "Worktree is not locked."
+					return m, nil
+				}
+				m.mode = modeUnlock
+				m.unlockPath = row.Path
+				m.unlockBranch = row.Branch
+				m.errMsg = ""
+				return m, nil
+			}
 		}
 	}
 	return m, nil
@@ -559,6 +599,18 @@ func (m model) View() string {
 		b.WriteString("\nAre you sure? (y/N)\n")
 		return b.String()
 	}
+	if m.mode == modeUnlock {
+		b.WriteString("Unlock worktree:\n")
+		b.WriteString(fmt.Sprintf("%s\n", m.unlockBranch))
+		b.WriteString(fmt.Sprintf("%s\n", m.unlockPath))
+		if m.errMsg != "" {
+			b.WriteString("\n")
+			b.WriteString(errorStyle.Render(m.errMsg))
+			b.WriteString("\n")
+		}
+		b.WriteString("\nAre you sure? (y/N)\n")
+		return b.String()
+	}
 	b.WriteString(baseStyle.Render(renderSelector(m.status, m.listIndex, m.ghPendingByBranch, m.ghSpinner.View())))
 	if m.status.Err != nil {
 		b.WriteString(errorStyle.Render(fmt.Sprintf("Error: %v", m.status.Err)))
@@ -592,13 +644,11 @@ func (m model) View() string {
 		b.WriteString("\n")
 		b.WriteString(secondaryStyle.Render(selectedPath))
 		b.WriteString("\n")
-		if wt, ok := selectedWorktree(m.status, m.listIndex); ok && wt.HasPR {
-			if strings.TrimSpace(wt.PRURL) != "" {
+		if wt, ok := selectedWorktree(m.status, m.listIndex); ok {
+			if wt.HasPR && strings.TrimSpace(wt.PRURL) != "" {
 				b.WriteString(secondaryStyle.Render("PR: " + wt.PRURL))
 				b.WriteString("\n")
 			}
-			b.WriteString(secondaryStyle.Render(fmt.Sprintf("Review: unresolved=%d approved=%t", wt.UnresolvedComments, wt.Approved)))
-			b.WriteString("\n")
 		}
 	}
 	b.WriteString("\n")
@@ -607,8 +657,12 @@ func (m model) View() string {
 		help = "Creating worktree..."
 	} else if isCreateRow(m.listIndex, m.status) {
 		help = "Press enter for actions, r to refresh, q to quit."
-	} else if _, ok := selectedWorktree(m.status, m.listIndex); ok {
-		help = "Press enter for actions, d to delete, r to refresh, q to quit."
+	} else if wt, ok := selectedWorktree(m.status, m.listIndex); ok {
+		if !wt.Available && !isOrphanedPath(m.status, wt.Path) {
+			help = "Press u to unlock, d to delete, r to refresh, q to quit."
+		} else {
+			help = "Press enter for actions, d to delete, r to refresh, q to quit."
+		}
 	}
 	b.WriteString(help + "\n")
 	return b.String()
@@ -667,42 +721,40 @@ func renderSelector(status WorktreeStatus, cursor int, pendingByBranch map[strin
 		return ""
 	}
 	const (
-		branchWidth   = 28
-		statusWidth   = 10
+		branchWidth   = 40
 		prWidth       = 8
 		ciWidth       = 12
 		approvedWidth = 12
 	)
 	var b strings.Builder
-	header := formatSelectorLine("Branch", "Status", "PR", "CI", "Approved", branchWidth, statusWidth, prWidth, ciWidth, approvedWidth)
+	header := formatSelectorLine("Branch", "PR", "CI", "Approved", branchWidth, prWidth, ciWidth, approvedWidth)
 	b.WriteString(selectorHeaderStyle.Render("  " + header))
 	b.WriteString("\n")
 	orphaned := make(map[string]bool, len(status.Orphaned))
 	for _, wt := range status.Orphaned {
 		orphaned[wt.Path] = true
 	}
-	for i, wt := range status.Worktrees {
+	worktrees := worktreesForDisplay(status)
+	for i, wt := range worktrees {
 		label := wt.Branch
-		statusLabel := "Free"
 		rowStyle := selectorNormalStyle
 		rowSelectedStyle := selectorSelectedStyle
 		if orphaned[wt.Path] {
 			label = fmt.Sprintf("%s (orphaned)", wt.Branch)
-			statusLabel = "Missing"
 			rowStyle = selectorDisabledStyle
 			rowSelectedStyle = selectorDisabledSelectedStyle
 		} else if !wt.Available {
-			statusLabel = "In use"
+			label = wt.Branch + " (locked)"
+			rowStyle = selectorDisabledStyle
+			rowSelectedStyle = selectorDisabledSelectedStyle
 		}
 		pending := pendingByBranch[strings.TrimSpace(wt.Branch)]
 		line := formatSelectorLine(
 			label,
-			statusLabel,
 			formatPRLabel(wt, pending, loadingGlyph),
 			formatCILabel(wt, pending, loadingGlyph),
 			formatReviewLabel(wt, pending, loadingGlyph),
 			branchWidth,
-			statusWidth,
 			prWidth,
 			ciWidth,
 			approvedWidth,
@@ -714,8 +766,8 @@ func renderSelector(status WorktreeStatus, cursor int, pendingByBranch map[strin
 		}
 		b.WriteString("\n")
 	}
-	createIdx := len(status.Worktrees)
-	createLine := formatSelectorLine("+ New worktree", "", "", "", "", branchWidth, statusWidth, prWidth, ciWidth, approvedWidth)
+	createIdx := len(worktrees)
+	createLine := formatSelectorLine("+ New worktree", "", "", "", branchWidth, prWidth, ciWidth, approvedWidth)
 	if createIdx == cursor {
 		b.WriteString("  " + selectorSelectedStyle.Render(createLine))
 	} else {
@@ -724,9 +776,8 @@ func renderSelector(status WorktreeStatus, cursor int, pendingByBranch map[strin
 	return b.String()
 }
 
-func formatSelectorLine(branch string, status string, pr string, ci string, approved string, branchWidth int, statusWidth int, prWidth int, ciWidth int, approvedWidth int) string {
+func formatSelectorLine(branch string, pr string, ci string, approved string, branchWidth int, prWidth int, ciWidth int, approvedWidth int) string {
 	return padOrTrim(branch, branchWidth) + " " +
-		padOrTrim(status, statusWidth) + " " +
 		padOrTrim(pr, prWidth) + " " +
 		padOrTrim(ci, ciWidth) + " " +
 		padOrTrim(approved, approvedWidth)
@@ -759,20 +810,19 @@ var (
 	errorStyle            = lipgloss.NewStyle().Foreground(lipgloss.Color("1")).Bold(true)
 	secondaryStyle        = lipgloss.NewStyle().Foreground(lipgloss.Color("245"))
 	actionNormalStyle     = lipgloss.NewStyle().Foreground(lipgloss.Color("251"))
-	actionSelectedStyle   = lipgloss.NewStyle().Foreground(lipgloss.Color("15")).Background(lipgloss.Color("8")).Bold(true)
+	actionSelectedStyle   = lipgloss.NewStyle().Foreground(lipgloss.Color("#7D56F4")).Bold(true)
 	selectorNormalStyle   = lipgloss.NewStyle().Foreground(lipgloss.Color("251"))
 	selectorSelectedStyle = lipgloss.NewStyle().
-				Foreground(lipgloss.Color("15")).
-				Background(lipgloss.Color("8")).
+				Foreground(lipgloss.Color("#7D56F4")).
 				Bold(true)
 	selectorDisabledStyle = lipgloss.NewStyle().
 				Foreground(lipgloss.Color("241"))
 	selectorDisabledSelectedStyle = lipgloss.NewStyle().
-					Foreground(lipgloss.Color("252")).
-					Background(lipgloss.Color("236")).
+					Foreground(lipgloss.Color("#7D56F4")).
 					Bold(true)
 	selectorHeaderStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("15")).Bold(true)
 	branchStyle         = lipgloss.NewStyle().Foreground(lipgloss.Color("15")).Bold(true)
+	branchInlineStyle   = lipgloss.NewStyle().Bold(true)
 	warnStyle           = lipgloss.NewStyle().Foreground(lipgloss.Color("3")).Bold(true)
 	inputStyle          = lipgloss.NewStyle().
 				Padding(0, 1)
@@ -791,6 +841,7 @@ const (
 	modeList uiMode = iota
 	modeCreating
 	modeDelete
+	modeUnlock
 	modeAction
 	modeBranchName
 	modeBranchPick
@@ -819,17 +870,18 @@ func isCreateRow(cursor int, status WorktreeStatus) bool {
 	if cursor < 0 {
 		return false
 	}
-	return cursor == len(status.Worktrees)
+	return cursor == len(worktreesForDisplay(status))
 }
 
 func selectedWorktree(status WorktreeStatus, cursor int) (WorktreeInfo, bool) {
 	if !status.InRepo {
 		return WorktreeInfo{}, false
 	}
-	if cursor < 0 || cursor >= len(status.Worktrees) {
+	worktrees := worktreesForDisplay(status)
+	if cursor < 0 || cursor >= len(worktrees) {
 		return WorktreeInfo{}, false
 	}
-	return status.Worktrees[cursor], true
+	return worktrees[cursor], true
 }
 
 func isOrphanedPath(status WorktreeStatus, path string) bool {
@@ -847,8 +899,8 @@ func actionItems(branch string, baseRef string) []string {
 		base = "main"
 	}
 	return []string{
-		"Use " + branchStyle.Render(branch),
-		"Checkout new branch from " + branchStyle.Render(base),
+		"Use " + branchInlineStyle.Render(branch),
+		"Checkout new branch from " + branchInlineStyle.Render(base),
 		"Choose an existing branch",
 		"Open shell here",
 	}
@@ -860,7 +912,7 @@ func createActionItems(baseRef string) []string {
 		base = "main"
 	}
 	return []string{
-		"Checkout new branch from " + branchStyle.Render(base),
+		"Checkout new branch from " + branchInlineStyle.Render(base),
 		"Choose an existing branch",
 	}
 }
@@ -873,13 +925,11 @@ func currentActionItems(branch string, baseRef string, create bool) []string {
 }
 
 func currentWorktreePath(status WorktreeStatus, cursor int) string {
-	if !status.InRepo {
+	wt, ok := selectedWorktree(status, cursor)
+	if !ok {
 		return ""
 	}
-	if cursor < 0 || cursor >= len(status.Worktrees) {
-		return ""
-	}
-	return status.Worktrees[cursor].Path
+	return wt.Path
 }
 
 func greenCheck() string {
@@ -1002,7 +1052,7 @@ func selectorRowCount(status WorktreeStatus) int {
 	if !status.InRepo {
 		return 0
 	}
-	return len(status.Worktrees) + 1
+	return len(worktreesForDisplay(status)) + 1
 }
 
 func pendingBranchesByName(status WorktreeStatus) map[string]bool {
@@ -1037,6 +1087,32 @@ func ghDataKeyForStatus(status WorktreeStatus) string {
 	}
 	sort.Strings(branches)
 	return repo + "|" + strings.Join(branches, ",")
+}
+
+func worktreesForDisplay(status WorktreeStatus) []WorktreeInfo {
+	if !status.InRepo {
+		return nil
+	}
+	orphaned := make(map[string]bool, len(status.Orphaned))
+	for _, wt := range status.Orphaned {
+		orphaned[wt.Path] = true
+	}
+	out := make([]WorktreeInfo, len(status.Worktrees))
+	copy(out, status.Worktrees)
+	sort.SliceStable(out, func(i, j int) bool {
+		iFree := out[i].Available && !orphaned[out[i].Path]
+		jFree := out[j].Available && !orphaned[out[j].Path]
+		if iFree != jFree {
+			return iFree
+		}
+		iBranch := strings.ToLower(strings.TrimSpace(out[i].Branch))
+		jBranch := strings.ToLower(strings.TrimSpace(out[j].Branch))
+		if iBranch != jBranch {
+			return iBranch > jBranch
+		}
+		return out[i].Path > out[j].Path
+	})
+	return out
 }
 
 func applyPRDataToStatus(status *WorktreeStatus, byBranch map[string]PRData) {

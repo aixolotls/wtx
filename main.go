@@ -21,6 +21,8 @@ func run(args []string) error {
 		case "init":
 			p := tea.NewProgram(newInitModel())
 			return p.Start()
+		case "tmux-status":
+			return runTmuxStatus(args[2:])
 		default:
 			return fmt.Errorf("unknown command: %s", args[1])
 		}

@@ -300,6 +300,22 @@ func (m *WorktreeManager) AcquireWorktreeLock(worktreePath string) (*WorktreeLoc
 	return m.lockMgr.Acquire(repoRoot, worktreePath)
 }
 
+func (m *WorktreeManager) UnlockWorktree(worktreePath string) error {
+	worktreePath = strings.TrimSpace(worktreePath)
+	if worktreePath == "" {
+		return errors.New("worktree path required")
+	}
+	gitPath, err := exec.LookPath("git")
+	if err != nil {
+		return errors.New("git not installed")
+	}
+	repoRoot, err := gitOutputInDir(m.cwd, gitPath, "rev-parse", "--show-toplevel")
+	if err != nil || strings.TrimSpace(repoRoot) == "" {
+		return errors.New("not in a git repository")
+	}
+	return m.lockMgr.ForceUnlock(repoRoot, worktreePath)
+}
+
 func listWorktrees(repoRoot string, gitPath string) ([]WorktreeInfo, []string, error) {
 	cmd := exec.Command(gitPath, "worktree", "list", "--porcelain")
 	cmd.Dir = repoRoot

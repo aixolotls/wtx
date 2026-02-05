@@ -33,7 +33,7 @@ func ensureFreshTmuxSession(args []string) (bool, error) {
 	setITermWTXTab()
 
 	session := fmt.Sprintf("wtx-%d", time.Now().UnixNano())
-	tmuxArgs := []string{"new-session", "-s", session, "-c", cwd, bin}
+	tmuxArgs := []string{"new-session", "-e", "WTX_STATUS_BIN=" + bin, "-s", session, "-c", cwd, bin}
 	if len(args) > 1 {
 		tmuxArgs = append(tmuxArgs, args[1:]...)
 	}
@@ -73,11 +73,12 @@ func setStartupStatusBanner() {
 	if strings.TrimSpace(os.Getenv("TMUX")) == "" {
 		return
 	}
+	ensureWTXSessionDefaults()
 	cwd, err := os.Getwd()
 	if err != nil {
 		return
 	}
-	setStatusBanner(renderBanner("", cwd))
+	setStatusBanner(renderBanner("", cwd, ""))
 }
 
 func splitAgentPane(worktreePath string, agentCmd string) (string, error) {
@@ -138,13 +139,16 @@ func currentSessionID() (string, error) {
 	return strings.TrimSpace(string(out)), nil
 }
 
-func renderBanner(branch string, path string) string {
+func renderBanner(branch string, path string, ghSummary string) string {
 	label := "WTX"
 	if branch != "" {
 		label = label + "  " + branch
 	}
 	if path != "" {
 		label = label + "  " + path
+	}
+	if strings.TrimSpace(ghSummary) != "" {
+		label = label + "  " + strings.TrimSpace(ghSummary)
 	}
 	style := lipgloss.NewStyle().
 		Bold(true).
@@ -172,6 +176,30 @@ func setStatusBanner(banner string) {
 	_ = exec.Command("tmux", "set-option", "-t", sessionID, "status-left", " "+banner+" ").Run()
 }
 
+func setDynamicWorktreeStatus(worktreePath string) {
+	worktreePath = strings.TrimSpace(worktreePath)
+	if worktreePath == "" {
+		return
+	}
+	sessionID, err := currentSessionID()
+	if err != nil || strings.TrimSpace(sessionID) == "" {
+		return
+	}
+	bin := resolveStatusCommandBinary()
+	if strings.TrimSpace(bin) == "" {
+		return
+	}
+	cmd := "#(" + shellQuote(bin) + " tmux-status --worktree " + shellQuote(worktreePath) + ")"
+	_ = exec.Command("tmux", "set-option", "-t", sessionID, "status", "1").Run()
+	_ = exec.Command("tmux", "set-option", "-t", sessionID, "status-position", "bottom").Run()
+	_ = exec.Command("tmux", "set-option", "-t", sessionID, "status-justify", "left").Run()
+	_ = exec.Command("tmux", "set-option", "-t", sessionID, "status-style", "fg=#FFF7DB,bg=#7D56F4").Run()
+	_ = exec.Command("tmux", "set-option", "-t", sessionID, "status-left-length", "300").Run()
+	_ = exec.Command("tmux", "set-option", "-t", sessionID, "status-right", "").Run()
+	_ = exec.Command("tmux", "set-option", "-t", sessionID, "status-interval", "10").Run()
+	_ = exec.Command("tmux", "set-option", "-t", sessionID, "status-left", " "+cmd+" ").Run()
+}
+
 func clearScreen() {
 	_ = exec.Command("tmux", "clear-history").Run()
 	fmt.Fprint(os.Stdout, "\x1b[2J\x1b[H")
@@ -194,4 +222,47 @@ func stripANSI(value string) string {
 		out = append(out, r)
 	}
 	return string(out)
+}
+
+func shellQuote(value string) string {
+	if value == "" {
+		return "''"
+	}
+	return "'" + strings.ReplaceAll(value, "'", `'\''`) + "'"
+}
+
+func ensureWTXSessionDefaults() {
+	sessionID, err := currentSessionID()
+	if err != nil || strings.TrimSpace(sessionID) == "" {
+		return
+	}
+	// Ensure session dies when terminal client closes, so pane-backed locks do not linger.
+	_ = exec.Command("tmux", "set-option", "-t", sessionID, "destroy-unattached", "on").Run()
+}
+
+func resolveStatusCommandBinary() string {
+	if v := strings.TrimSpace(os.Getenv("WTX_STATUS_BIN")); v != "" {
+		if fileLooksExecutable(v) {
+			return v
+		}
+	}
+	if p, err := exec.LookPath("wtx"); err == nil && strings.TrimSpace(p) != "" {
+		return p
+	}
+	if p, err := os.Executable(); err == nil && strings.TrimSpace(p) != "" && fileLooksExecutable(p) {
+		return p
+	}
+	return ""
+}
+
+func fileLooksExecutable(path string) bool {
+	path = strings.TrimSpace(path)
+	if path == "" {
+		return false
+	}
+	info, err := os.Stat(path)
+	if err != nil || info.IsDir() {
+		return false
+	}
+	return info.Mode()&0o111 != 0
 }

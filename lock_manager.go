@@ -152,6 +152,25 @@ func (l *WorktreeLock) Release() {
 	_ = os.Remove(l.path)
 }
 
+func (m *LockManager) ForceUnlock(repoRoot string, worktreePath string) error {
+	repoRoot = strings.TrimSpace(repoRoot)
+	worktreePath = strings.TrimSpace(worktreePath)
+	if repoRoot == "" {
+		return errors.New("repo root required")
+	}
+	if worktreePath == "" {
+		return errors.New("worktree path required")
+	}
+	lockPath, err := m.lockPath(repoRoot, worktreePath)
+	if err != nil {
+		return err
+	}
+	if err := os.Remove(lockPath); err != nil && !errors.Is(err, os.ErrNotExist) {
+		return err
+	}
+	return nil
+}
+
 func (l *WorktreeLock) RebindPID(pid int) error {
 	if l == nil {
 		return errors.New("lock required")
