@@ -1,0 +1,313 @@
+package main
+
+import (
+	"crypto/rand"
+	"crypto/sha256"
+	"encoding/hex"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"os"
+	"os/exec"
+	"os/user"
+	"path/filepath"
+	"strings"
+	"syscall"
+	"time"
+)
+
+type LockManager struct {
+	staleAfter time.Duration
+}
+
+func NewLockManager() *LockManager {
+	return &LockManager{staleAfter: 10 * time.Second}
+}
+
+type WorktreeLock struct {
+	path         string
+	worktreePath string
+	repoRoot     string
+	ownerID      string
+	pid          int
+}
+
+func (m *LockManager) Acquire(repoRoot string, worktreePath string) (*WorktreeLock, error) {
+	return m.acquireWithPID(repoRoot, worktreePath, os.Getpid())
+}
+
+func (m *LockManager) AcquireForPID(repoRoot string, worktreePath string, pid int) (*WorktreeLock, error) {
+	if pid <= 0 {
+		return nil, errors.New("invalid pid")
+	}
+	return m.acquireWithPID(repoRoot, worktreePath, pid)
+}
+
+func (m *LockManager) acquireWithPID(repoRoot string, worktreePath string, pid int) (*WorktreeLock, error) {
+	repoRoot = strings.TrimSpace(repoRoot)
+	worktreePath = strings.TrimSpace(worktreePath)
+	if repoRoot == "" {
+		return nil, errors.New("repo root required")
+	}
+	if worktreePath == "" {
+		return nil, errors.New("worktree path required")
+	}
+
+	lockPath, err := m.lockPath(repoRoot, worktreePath)
+	if err != nil {
+		return nil, err
+	}
+	if err := os.MkdirAll(filepath.Dir(lockPath), 0o755); err != nil {
+		return nil, err
+	}
+
+	ownerID := buildOwnerID()
+	payload, err := lockPayload(repoRoot, worktreePath, ownerID, pid)
+	if err != nil {
+		return nil, err
+	}
+
+	file, err := os.OpenFile(lockPath, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o644)
+	if err == nil {
+		if _, werr := file.Write(payload); werr != nil {
+			_ = file.Close()
+			_ = os.Remove(lockPath)
+			return nil, werr
+		}
+		_ = file.Close()
+		return &WorktreeLock{path: lockPath, worktreePath: worktreePath, repoRoot: repoRoot, ownerID: ownerID, pid: pid}, nil
+	}
+	if !errors.Is(err, os.ErrExist) {
+		return nil, err
+	}
+
+	info, statErr := os.Stat(lockPath)
+	if statErr != nil {
+		return nil, statErr
+	}
+	if payload, readErr := readLockPayload(lockPath); readErr == nil && payload.PID > 0 && pidAlive(payload.PID) {
+		return nil, errors.New("worktree locked")
+	}
+	if time.Since(info.ModTime()) < m.staleAfter {
+		return nil, errors.New("worktree locked")
+	}
+
+	tmpPath := lockPath + "." + randomToken() + ".tmp"
+	if err := os.WriteFile(tmpPath, payload, 0o644); err != nil {
+		return nil, err
+	}
+	if err := os.Rename(tmpPath, lockPath); err != nil {
+		_ = os.Remove(tmpPath)
+		return nil, err
+	}
+
+	current, err := readLockPayload(lockPath)
+	if err != nil {
+		return nil, err
+	}
+	if current.OwnerID != ownerID || current.PID != pid {
+		return nil, errors.New("worktree locked")
+	}
+	return &WorktreeLock{path: lockPath, worktreePath: worktreePath, repoRoot: repoRoot, ownerID: ownerID, pid: pid}, nil
+}
+
+func (m *LockManager) IsAvailable(repoRoot string, worktreePath string) (bool, error) {
+	repoRoot = strings.TrimSpace(repoRoot)
+	worktreePath = strings.TrimSpace(worktreePath)
+	if repoRoot == "" {
+		return false, errors.New("repo root required")
+	}
+	if worktreePath == "" {
+		return false, errors.New("worktree path required")
+	}
+
+	lockPath, err := m.lockPath(repoRoot, worktreePath)
+	if err != nil {
+		return false, err
+	}
+	info, err := os.Stat(lockPath)
+	if err == nil {
+		payload, perr := readLockPayload(lockPath)
+		if perr != nil {
+			return false, nil
+		}
+		if payload.PID > 0 && pidAlive(payload.PID) {
+			return false, nil
+		}
+		if time.Since(info.ModTime()) < m.staleAfter {
+			return false, nil
+		}
+		return true, nil
+	}
+	if errors.Is(err, os.ErrNotExist) {
+		return true, nil
+	}
+	return false, err
+}
+
+func (l *WorktreeLock) Release() {
+	if l == nil {
+		return
+	}
+	_ = os.Remove(l.path)
+}
+
+func (l *WorktreeLock) RebindPID(pid int) error {
+	if l == nil {
+		return errors.New("lock required")
+	}
+	if pid <= 0 {
+		return errors.New("invalid pid")
+	}
+	current, err := readLockPayload(l.path)
+	if err != nil {
+		return err
+	}
+	if current.OwnerID != l.ownerID || current.PID != l.pid {
+		return errors.New("lock ownership lost")
+	}
+	payload, err := lockPayload(l.repoRoot, l.worktreePath, l.ownerID, pid)
+	if err != nil {
+		return err
+	}
+	tmpPath := l.path + "." + randomToken() + ".tmp"
+	if err := os.WriteFile(tmpPath, payload, 0o644); err != nil {
+		return err
+	}
+	if err := os.Rename(tmpPath, l.path); err != nil {
+		_ = os.Remove(tmpPath)
+		return err
+	}
+	l.pid = pid
+	return nil
+}
+
+func (m *LockManager) lockPath(repoRoot string, worktreePath string) (string, error) {
+	worktreeID, err := worktreeID(repoRoot, worktreePath)
+	if err != nil {
+		return "", err
+	}
+	home := strings.TrimSpace(os.Getenv("HOME"))
+	if home == "" {
+		return "", errors.New("HOME not set")
+	}
+	lockDir := filepath.Join(home, ".wtx", "locks")
+	return filepath.Join(lockDir, worktreeID+".lock"), nil
+}
+
+func worktreeID(repoRoot string, worktreePath string) (string, error) {
+	repoIDRoot := repoRoot
+	if gitPath, err := exec.LookPath("git"); err == nil {
+		commonDir, err := gitOutputInDir(repoRoot, gitPath, "rev-parse", "--path-format=absolute", "--git-common-dir")
+		if err == nil && strings.TrimSpace(commonDir) != "" {
+			repoIDRoot = commonDir
+		}
+	}
+	repoRootReal, err := realPath(repoIDRoot)
+	if err != nil {
+		return "", err
+	}
+	worktreeReal, err := realPathOrAbs(worktreePath)
+	if err != nil {
+		return "", err
+	}
+
+	repoID := hashString(repoRootReal)
+	worktreeID := hashString(repoID + ":" + worktreeReal)
+	return worktreeID, nil
+}
+
+func realPath(path string) (string, error) {
+	abs, err := filepath.Abs(path)
+	if err != nil {
+		return "", err
+	}
+	return filepath.EvalSymlinks(abs)
+}
+
+func realPathOrAbs(path string) (string, error) {
+	abs, err := filepath.Abs(path)
+	if err != nil {
+		return "", err
+	}
+	real, err := filepath.EvalSymlinks(abs)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return abs, nil
+		}
+		return "", err
+	}
+	return real, nil
+}
+
+func hashString(value string) string {
+	sum := sha256.Sum256([]byte(value))
+	return hex.EncodeToString(sum[:])
+}
+
+func buildOwnerID() string {
+	name := os.Getenv("USER")
+	if name == "" {
+		if u, err := user.Current(); err == nil {
+			name = u.Username
+		}
+	}
+	host, _ := os.Hostname()
+	if name == "" && host == "" {
+		name = "unknown"
+	}
+	if host == "" {
+		host = "unknown"
+	}
+	return fmt.Sprintf("%s@%s:%d:%s", name, host, os.Getpid(), randomToken())
+}
+
+type lockPayloadData struct {
+	OwnerID string `json:"owner_id"`
+	PID     int    `json:"pid"`
+}
+
+func lockPayload(repoRoot string, worktreePath string, ownerID string, pid int) ([]byte, error) {
+	data := map[string]any{
+		"pid":           pid,
+		"owner_id":      ownerID,
+		"worktree_path": worktreePath,
+		"repo_root":     repoRoot,
+		"timestamp":     time.Now().UTC().Format(time.RFC3339Nano),
+	}
+	return json.Marshal(data)
+}
+
+func readLockPayload(path string) (lockPayloadData, error) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return lockPayloadData{}, err
+	}
+	var payload lockPayloadData
+	if err := json.Unmarshal(data, &payload); err != nil {
+		return lockPayloadData{}, err
+	}
+	return payload, nil
+}
+
+func pidAlive(pid int) bool {
+	if pid <= 0 {
+		return false
+	}
+	err := syscall.Kill(pid, 0)
+	if err == nil {
+		return true
+	}
+	if errors.Is(err, syscall.EPERM) {
+		return true
+	}
+	return false
+}
+
+func randomToken() string {
+	var buf [8]byte
+	if _, err := rand.Read(buf[:]); err != nil {
+		return fmt.Sprintf("%d", time.Now().UnixNano())
+	}
+	return hex.EncodeToString(buf[:])
+}

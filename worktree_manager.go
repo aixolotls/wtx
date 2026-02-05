@@ -10,8 +10,17 @@ import (
 )
 
 type WorktreeInfo struct {
-	Path   string
-	Branch string
+	Path               string
+	Branch             string
+	Available          bool
+	PRURL              string
+	PRNumber           int
+	HasPR              bool
+	CIState            PRCIState
+	CIDone             int
+	CITotal            int
+	Approved           bool
+	UnresolvedComments int
 }
 
 type WorktreeStatus struct {
@@ -27,14 +36,22 @@ type WorktreeStatus struct {
 }
 
 type WorktreeManager struct {
-	cwd string
+	cwd     string
+	lockMgr *LockManager
+	ghMgr   *GHManager
 }
 
-func NewWorktreeManager(cwd string) *WorktreeManager {
+func NewWorktreeManager(cwd string, lockMgr *LockManager, ghMgr *GHManager) *WorktreeManager {
 	if strings.TrimSpace(cwd) == "" {
 		cwd, _ = os.Getwd()
 	}
-	return &WorktreeManager{cwd: cwd}
+	if lockMgr == nil {
+		lockMgr = NewLockManager()
+	}
+	if ghMgr == nil {
+		ghMgr = NewGHManager()
+	}
+	return &WorktreeManager{cwd: cwd, lockMgr: lockMgr, ghMgr: ghMgr}
 }
 
 func (m *WorktreeManager) Status() WorktreeStatus {
@@ -72,12 +89,46 @@ func (m *WorktreeManager) Status() WorktreeStatus {
 			return status
 		}
 		if !exists {
+			wt.Available = false
+			for i := range status.Worktrees {
+				if status.Worktrees[i].Path == wt.Path {
+					status.Worktrees[i].Available = false
+					break
+				}
+			}
 			orphaned = append(orphaned, wt)
+			continue
+		}
+		available, err := m.lockMgr.IsAvailable(repoRoot, wt.Path)
+		if err != nil {
+			status.Err = err
+			return status
+		}
+		for i := range status.Worktrees {
+			if status.Worktrees[i].Path == wt.Path {
+				status.Worktrees[i].Available = available
+				break
+			}
 		}
 	}
 	status.Orphaned = orphaned
 
 	return status
+}
+
+func (m *WorktreeManager) PRDataForStatus(status WorktreeStatus) map[string]PRData {
+	if !status.InRepo || strings.TrimSpace(status.RepoRoot) == "" {
+		return map[string]PRData{}
+	}
+	branches := make([]string, 0, len(status.Worktrees))
+	for _, wt := range status.Worktrees {
+		b := strings.TrimSpace(wt.Branch)
+		if b == "" || b == "detached" {
+			continue
+		}
+		branches = append(branches, b)
+	}
+	return m.ghMgr.PRDataByBranch(status.RepoRoot, branches)
 }
 
 func (m *WorktreeManager) CreateWorktree(branch string) (WorktreeInfo, error) {
@@ -100,6 +151,11 @@ func (m *WorktreeManager) CreateWorktree(branch string) (WorktreeInfo, error) {
 	if err != nil {
 		return WorktreeInfo{}, err
 	}
+	lock, err := m.lockMgr.Acquire(repoRoot, target)
+	if err != nil {
+		return WorktreeInfo{}, err
+	}
+	defer lock.Release()
 
 	cmd := exec.Command(gitPath, "worktree", "add", "-b", branch, target, "HEAD")
 	cmd.Dir = repoRoot
@@ -130,6 +186,11 @@ func (m *WorktreeManager) CreateWorktreeFromBranch(branch string) (WorktreeInfo,
 	if err != nil {
 		return WorktreeInfo{}, err
 	}
+	lock, err := m.lockMgr.Acquire(repoRoot, target)
+	if err != nil {
+		return WorktreeInfo{}, err
+	}
+	defer lock.Release()
 
 	cmd := exec.Command(gitPath, "worktree", "add", target, branch)
 	cmd.Dir = repoRoot
@@ -191,6 +252,11 @@ func (m *WorktreeManager) DeleteWorktree(path string, force bool) error {
 		args = append(args, "--force")
 	}
 	args = append(args, path)
+	lock, err := m.lockMgr.Acquire(repoRoot, path)
+	if err != nil {
+		return err
+	}
+	defer lock.Release()
 
 	cmd := exec.Command(gitPath, args...)
 	cmd.Dir = repoRoot
@@ -198,6 +264,40 @@ func (m *WorktreeManager) DeleteWorktree(path string, force bool) error {
 		return err
 	}
 	return nil
+}
+
+func (m *WorktreeManager) CheckoutExistingBranch(worktreePath string, branch string) error {
+	worktreePath = strings.TrimSpace(worktreePath)
+	branch = strings.TrimSpace(branch)
+	if worktreePath == "" {
+		return errors.New("worktree path required")
+	}
+	if branch == "" {
+		return errors.New("branch name required")
+	}
+	gitPath, err := exec.LookPath("git")
+	if err != nil {
+		return errors.New("git not installed")
+	}
+	cmd := exec.Command(gitPath, "checkout", branch)
+	cmd.Dir = worktreePath
+	return cmd.Run()
+}
+
+func (m *WorktreeManager) AcquireWorktreeLock(worktreePath string) (*WorktreeLock, error) {
+	worktreePath = strings.TrimSpace(worktreePath)
+	if worktreePath == "" {
+		return nil, errors.New("worktree path required")
+	}
+	gitPath, err := exec.LookPath("git")
+	if err != nil {
+		return nil, errors.New("git not installed")
+	}
+	repoRoot, err := gitOutputInDir(m.cwd, gitPath, "rev-parse", "--show-toplevel")
+	if err != nil || strings.TrimSpace(repoRoot) == "" {
+		return nil, errors.New("not in a git repository")
+	}
+	return m.lockMgr.Acquire(repoRoot, worktreePath)
 }
 
 func listWorktrees(repoRoot string, gitPath string) ([]WorktreeInfo, []string, error) {

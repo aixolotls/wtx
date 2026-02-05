@@ -37,14 +37,16 @@ type model struct {
 	branchIndex       int
 	pendingPath       string
 	pendingBranch     string
+	pendingOpenShell  bool
+	pendingLock       *WorktreeLock
 }
 
-func (m model) PendingWorktree() (string, string) {
-	return m.pendingPath, m.pendingBranch
+func (m model) PendingWorktree() (string, string, bool, *WorktreeLock) {
+	return m.pendingPath, m.pendingBranch, m.pendingOpenShell, m.pendingLock
 }
 
 func newModel() model {
-	mgr := NewWorktreeManager("")
+	mgr := NewWorktreeManager("", NewLockManager(), NewGHManager())
 	m := model{mgr: mgr, ctrl: NewController()}
 	m.table = newTable()
 	m.branchInput = newBranchInput()
@@ -54,7 +56,7 @@ func newModel() model {
 }
 
 func (m model) Init() tea.Cmd {
-	return fetchStatusCmd(m.mgr)
+	return tea.Batch(fetchStatusCmd(m.mgr), pollStatusTickCmd())
 }
 
 func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
@@ -63,7 +65,45 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.status = WorktreeStatus(msg)
 		m.table.SetRows(worktreeRows(m.status))
 		m.ready = true
+		return m, fetchGHDataCmd(m.mgr, m.status)
+	case ghDataMsg:
+		if strings.TrimSpace(msg.repoRoot) == "" || strings.TrimSpace(m.status.RepoRoot) == "" {
+			return m, nil
+		}
+		if msg.repoRoot != m.status.RepoRoot {
+			return m, nil
+		}
+		for i := range m.status.Worktrees {
+			b := strings.TrimSpace(m.status.Worktrees[i].Branch)
+			m.status.Worktrees[i].HasPR = false
+			m.status.Worktrees[i].PRNumber = 0
+			m.status.Worktrees[i].PRURL = ""
+			m.status.Worktrees[i].CIState = PRCINone
+			m.status.Worktrees[i].CIDone = 0
+			m.status.Worktrees[i].CITotal = 0
+			m.status.Worktrees[i].Approved = false
+			m.status.Worktrees[i].UnresolvedComments = 0
+			if b == "" {
+				continue
+			}
+			if pr, ok := msg.byBranch[b]; ok {
+				m.status.Worktrees[i].HasPR = true
+				m.status.Worktrees[i].PRNumber = pr.Number
+				m.status.Worktrees[i].PRURL = pr.URL
+				m.status.Worktrees[i].CIState = pr.CIState
+				m.status.Worktrees[i].CIDone = pr.CICompleted
+				m.status.Worktrees[i].CITotal = pr.CITotal
+				m.status.Worktrees[i].Approved = pr.Approved
+				m.status.Worktrees[i].UnresolvedComments = pr.UnresolvedComments
+			}
+		}
+		m.table.SetRows(worktreeRows(m.status))
 		return m, nil
+	case pollStatusTickMsg:
+		if m.mode == modeList {
+			return m, tea.Batch(fetchStatusCmd(m.mgr), pollStatusTickCmd())
+		}
+		return m, pollStatusTickCmd()
 	case createWorktreeDoneMsg:
 		m.mode = modeList
 		m.creatingBranch = ""
@@ -207,6 +247,27 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					m.branchInput.Focus()
 					return m, nil
 				}
+				if m.actionIndex == 3 {
+					if row, ok := selectedWorktree(m.status, m.table.Cursor()); ok {
+						m.errMsg = ""
+						m.warnMsg = ""
+						if ok, warn := m.ctrl.AgentAvailable(); !ok {
+							m.warnMsg = warn
+							m.mode = modeList
+							return m, nil
+						}
+						lock, err := m.mgr.AcquireWorktreeLock(row.Path)
+						if err != nil {
+							m.errMsg = err.Error()
+							return m, nil
+						}
+						m.pendingPath = row.Path
+						m.pendingBranch = row.Branch
+						m.pendingOpenShell = true
+						m.pendingLock = lock
+						return m, tea.Quit
+					}
+				}
 				if m.actionIndex == 0 {
 					if row, ok := selectedWorktree(m.status, m.table.Cursor()); ok {
 						m.errMsg = ""
@@ -216,8 +277,15 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 							m.mode = modeList
 							return m, nil
 						}
+						lock, err := m.mgr.AcquireWorktreeLock(row.Path)
+						if err != nil {
+							m.errMsg = err.Error()
+							return m, nil
+						}
 						m.pendingPath = row.Path
 						m.pendingBranch = row.Branch
+						m.pendingOpenShell = false
+						m.pendingLock = lock
 						return m, tea.Quit
 					}
 				}
@@ -266,12 +334,41 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 						createWorktreeFromExistingCmd(m.mgr, branch),
 					)
 				}
-				m.errMsg = "Not implemented yet."
-				m.mode = modeAction
-				m.branchInput.Blur()
-				m.branchSuggestions = nil
-				m.branchIndex = 0
-				return m, nil
+				branch, ok := selectedBranch(m.branchSuggestions, m.branchIndex)
+				if !ok {
+					m.errMsg = "Select an existing branch."
+					return m, nil
+				}
+				row, ok := selectedWorktree(m.status, m.table.Cursor())
+				if !ok {
+					m.errMsg = "No worktree selected."
+					return m, nil
+				}
+				lock, err := m.mgr.AcquireWorktreeLock(row.Path)
+				if err != nil {
+					m.errMsg = err.Error()
+					return m, nil
+				}
+				if err := m.mgr.CheckoutExistingBranch(row.Path, branch); err != nil {
+					lock.Release()
+					m.errMsg = err.Error()
+					return m, nil
+				}
+				m.errMsg = ""
+				m.warnMsg = ""
+				if ok, warn := m.ctrl.AgentAvailable(); !ok {
+					m.warnMsg = warn
+					m.mode = modeList
+					m.branchInput.Blur()
+					m.branchSuggestions = nil
+					m.branchIndex = 0
+					return m, nil
+				}
+				m.pendingPath = row.Path
+				m.pendingBranch = branch
+				m.pendingOpenShell = false
+				m.pendingLock = lock
+				return m, tea.Quit
 			}
 			var cmd tea.Cmd
 			m.branchInput, cmd = m.branchInput.Update(msg)
@@ -298,6 +395,10 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			if row, ok := selectedWorktree(m.status, m.table.Cursor()); ok {
 				if isOrphanedPath(m.status, row.Path) {
 					m.errMsg = "Cannot open actions for orphaned worktree."
+					return m, nil
+				}
+				if !row.Available {
+					m.errMsg = "Worktree is currently in use."
 					return m, nil
 				}
 				m.mode = modeAction
@@ -365,6 +466,11 @@ func (m model) View() string {
 			}
 			b.WriteString(line + "\n")
 		}
+		if m.errMsg != "" {
+			b.WriteString("\n")
+			b.WriteString(errorStyle.Render(m.errMsg))
+			b.WriteString("\n")
+		}
 		b.WriteString("\nPress enter to select, esc to cancel.\n")
 		return b.String()
 	}
@@ -394,6 +500,11 @@ func (m model) View() string {
 			}
 			b.WriteString(line + "\n")
 		}
+		if m.errMsg != "" {
+			b.WriteString("\n")
+			b.WriteString(errorStyle.Render(m.errMsg))
+			b.WriteString("\n")
+		}
 		b.WriteString("\nPress enter to select, esc to cancel.\n")
 		return b.String()
 	}
@@ -401,6 +512,11 @@ func (m model) View() string {
 		b.WriteString("Delete worktree:\n")
 		b.WriteString(fmt.Sprintf("%s\n", m.deleteBranch))
 		b.WriteString(fmt.Sprintf("%s\n", m.deletePath))
+		if m.errMsg != "" {
+			b.WriteString("\n")
+			b.WriteString(errorStyle.Render(m.errMsg))
+			b.WriteString("\n")
+		}
 		b.WriteString("\nAre you sure? (y/N)\n")
 		return b.String()
 	}
@@ -437,6 +553,14 @@ func (m model) View() string {
 		b.WriteString("\n")
 		b.WriteString(secondaryStyle.Render(selectedPath))
 		b.WriteString("\n")
+		if wt, ok := selectedWorktree(m.status, m.table.Cursor()); ok && wt.HasPR {
+			if strings.TrimSpace(wt.PRURL) != "" {
+				b.WriteString(secondaryStyle.Render("PR: " + wt.PRURL))
+				b.WriteString("\n")
+			}
+			b.WriteString(secondaryStyle.Render(fmt.Sprintf("Review: unresolved=%d approved=%t", wt.UnresolvedComments, wt.Approved)))
+			b.WriteString("\n")
+		}
 	}
 	b.WriteString("\n")
 	help := "Press q to quit."
@@ -452,6 +576,11 @@ func (m model) View() string {
 }
 
 type statusMsg WorktreeStatus
+type pollStatusTickMsg time.Time
+type ghDataMsg struct {
+	repoRoot string
+	byBranch map[string]PRData
+}
 type createWorktreeDoneMsg struct {
 	created WorktreeInfo
 	err     error
@@ -460,6 +589,21 @@ type createWorktreeDoneMsg struct {
 func fetchStatusCmd(mgr *WorktreeManager) tea.Cmd {
 	return func() tea.Msg {
 		return statusMsg(mgr.Status())
+	}
+}
+
+func pollStatusTickCmd() tea.Cmd {
+	return tea.Tick(time.Second, func(t time.Time) tea.Msg {
+		return pollStatusTickMsg(t)
+	})
+}
+
+func fetchGHDataCmd(mgr *WorktreeManager, status WorktreeStatus) tea.Cmd {
+	return func() tea.Msg {
+		return ghDataMsg{
+			repoRoot: status.RepoRoot,
+			byBranch: mgr.PRDataForStatus(status),
+		}
 	}
 }
 
@@ -481,9 +625,9 @@ func newTable() table.Model {
 	columns := []table.Column{
 		{Title: "Branch", Width: 28},
 		{Title: "Status", Width: 10},
-		{Title: "PR", Width: 6},
-		{Title: "CI", Width: 6},
-		{Title: "Approved", Width: 9},
+		{Title: "PR", Width: 8},
+		{Title: "CI", Width: 12},
+		{Title: "Approved", Width: 12},
 	}
 	t := table.New(
 		table.WithColumns(columns),
@@ -505,16 +649,16 @@ func worktreeRows(status WorktreeStatus) []table.Row {
 	rows := make([]table.Row, 0, len(status.Worktrees))
 	for _, wt := range status.Worktrees {
 		label := wt.Branch
+		statusLabel := "Free"
 		if orphaned[wt.Path] {
 			label = fmt.Sprintf("%s (orphaned)", wt.Branch)
-		}
-		statusLabel := "Free"
-		if strings.Contains(strings.ToLower(wt.Branch), "main") {
+			statusLabel = "Missing"
+		} else if !wt.Available {
 			statusLabel = "In use"
 		}
-		pr := greenCheck()
-		ci := redX()
-		approved := greenCheck()
+		pr := formatPRLabel(wt)
+		ci := formatCILabel(wt)
+		approved := formatReviewLabel(wt)
 		rows = append(rows, table.Row{label, statusLabel, pr, ci, approved})
 	}
 	rows = append(rows, table.Row{"+ New worktree", "", "", "", ""})
@@ -665,6 +809,40 @@ func redX() string {
 	return "✗"
 }
 
+func formatPRLabel(wt WorktreeInfo) string {
+	if !wt.HasPR || wt.PRNumber <= 0 {
+		return "-"
+	}
+	return fmt.Sprintf("#%d", wt.PRNumber)
+}
+
+func formatCILabel(wt WorktreeInfo) string {
+	if !wt.HasPR || wt.CITotal == 0 {
+		return "-"
+	}
+	switch wt.CIState {
+	case PRCISuccess:
+		return fmt.Sprintf("✓ %d/%d", wt.CIDone, wt.CITotal)
+	case PRCIFail:
+		return fmt.Sprintf("✗ %d/%d", wt.CIDone, wt.CITotal)
+	case PRCIInProgress:
+		return fmt.Sprintf("… %d/%d", wt.CIDone, wt.CITotal)
+	default:
+		return "-"
+	}
+}
+
+func formatReviewLabel(wt WorktreeInfo) string {
+	if !wt.HasPR {
+		return "-"
+	}
+	prefix := "○"
+	if wt.Approved {
+		prefix = "✓"
+	}
+	return fmt.Sprintf("%s u:%d", prefix, wt.UnresolvedComments)
+}
+
 func uniqueBranches(status WorktreeStatus) []string {
 	seen := make(map[string]bool)
 	out := make([]string, 0, len(status.Worktrees)+1)
@@ -728,16 +906,6 @@ func selectedBranch(suggestions []string, index int) (string, bool) {
 	}
 	value := strings.TrimSpace(suggestions[index])
 	return value, value != ""
-}
-
-func nextAutoBranchName(status WorktreeStatus) string {
-	base := strings.TrimSpace(shortBranch(status.BaseRef))
-	if base == "" || base == "detached" {
-		base = "main"
-	}
-	base = strings.ReplaceAll(base, "/", "-")
-	base = strings.ReplaceAll(base, " ", "-")
-	return fmt.Sprintf("wt/%s-%d", base, time.Now().UnixNano())
 }
 
 func newSpinner() spinner.Model {

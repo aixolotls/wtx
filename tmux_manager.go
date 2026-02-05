@@ -5,6 +5,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 
@@ -88,6 +89,15 @@ func splitAgentPane(worktreePath string, agentCmd string) (string, error) {
 	return strings.TrimSpace(string(out)), nil
 }
 
+func splitShellPane(worktreePath string) (string, error) {
+	cmd := exec.Command("tmux", "split-window", "-v", "-p", "70", "-d", "-c", worktreePath, "-P", "-F", "#{pane_id}", "/bin/sh", "-lc", "exec \"${SHELL:-/bin/sh}\" -l")
+	out, err := cmd.Output()
+	if err != nil {
+		return "", err
+	}
+	return strings.TrimSpace(string(out)), nil
+}
+
 func tmuxAvailable() bool {
 	if strings.TrimSpace(os.Getenv("TMUX")) == "" {
 		return false
@@ -102,6 +112,22 @@ func currentPaneID() (string, error) {
 		return "", err
 	}
 	return strings.TrimSpace(string(out)), nil
+}
+
+func panePID(paneID string) (int, error) {
+	out, err := exec.Command("tmux", "display-message", "-p", "-t", paneID, "#{pane_pid}").Output()
+	if err != nil {
+		return 0, err
+	}
+	value := strings.TrimSpace(string(out))
+	if value == "" {
+		return 0, fmt.Errorf("tmux pane pid not found")
+	}
+	pid, err := strconv.Atoi(value)
+	if err != nil {
+		return 0, err
+	}
+	return pid, nil
 }
 
 func currentSessionID() (string, error) {
