@@ -48,6 +48,7 @@ type ghPR struct {
 	Number            int       `json:"number"`
 	URL               string    `json:"url"`
 	HeadRefName       string    `json:"headRefName"`
+	IsDraft           bool      `json:"isDraft"`
 	State             string    `json:"state"`
 	UpdatedAt         string    `json:"updatedAt"`
 	MergedAt          string    `json:"mergedAt"`
@@ -129,7 +130,7 @@ func (m *GHManager) fetchRepoPRData(repoRoot string, branches []string) (map[str
 	if err != nil {
 		return nil, err
 	}
-	cmd := exec.Command(ghPath, "pr", "list", "--state", "all", "--json", "number,url,headRefName,state,updatedAt,mergedAt,reviewDecision,statusCheckRollup", "--limit", "200")
+	cmd := exec.Command(ghPath, "pr", "list", "--state", "all", "--json", "number,url,headRefName,isDraft,state,updatedAt,mergedAt,reviewDecision,statusCheckRollup", "--limit", "200")
 	cmd.Dir = repoRoot
 	out, err := cmd.CombinedOutput()
 	if err != nil {
@@ -167,7 +168,7 @@ func (m *GHManager) fetchRepoPRData(repoRoot string, branches []string) (map[str
 			Number:         pr.Number,
 			URL:            strings.TrimSpace(pr.URL),
 			Branch:         branch,
-			Status:         normalizePRStatus(pr.State, pr.MergedAt),
+			Status:         normalizePRStatus(pr.State, pr.MergedAt, pr.IsDraft),
 			ReviewDecision: strings.TrimSpace(pr.ReviewDecision),
 			Approved:       strings.EqualFold(strings.TrimSpace(pr.ReviewDecision), "approved"),
 			CIState:        ciState,
@@ -197,9 +198,12 @@ func parseGitHubTime(value string) time.Time {
 	return t
 }
 
-func normalizePRStatus(state string, mergedAt string) string {
+func normalizePRStatus(state string, mergedAt string, isDraft bool) string {
 	if strings.TrimSpace(mergedAt) != "" {
 		return "merged"
+	}
+	if isDraft {
+		return "draft"
 	}
 	switch strings.ToUpper(strings.TrimSpace(state)) {
 	case "OPEN":

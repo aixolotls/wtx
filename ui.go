@@ -756,12 +756,12 @@ func renderSelector(status WorktreeStatus, cursor int, pendingByBranch map[strin
 	const (
 		branchWidth   = 40
 		prWidth       = 12
-		prStateWidth  = 10
 		ciWidth       = 12
 		approvedWidth = 12
+		prStateWidth  = 10
 	)
 	var b strings.Builder
-	header := formatSelectorLine("Branch", "PR", "PR State", "CI", "Approved", branchWidth, prWidth, prStateWidth, ciWidth, approvedWidth)
+	header := formatSelectorLine("Branch", "PR", "CI", "Approved", "PR Status", branchWidth, prWidth, ciWidth, approvedWidth, prStateWidth)
 	b.WriteString(selectorHeaderStyle.Render("  " + header))
 	b.WriteString("\n")
 	orphaned := make(map[string]bool, len(status.Orphaned))
@@ -786,14 +786,14 @@ func renderSelector(status WorktreeStatus, cursor int, pendingByBranch map[strin
 		line := formatSelectorLine(
 			label,
 			formatPRLabel(wt, pending, loadingGlyph),
-			formatPRStatusLabel(wt, pending, loadingGlyph),
 			formatCILabel(wt, pending, loadingGlyph),
 			formatReviewLabel(wt, pending, loadingGlyph),
+			formatPRStatusLabel(wt, pending, loadingGlyph),
 			branchWidth,
 			prWidth,
-			prStateWidth,
 			ciWidth,
 			approvedWidth,
+			prStateWidth,
 		)
 		if i == cursor {
 			b.WriteString("  " + rowSelectedStyle.Render(line))
@@ -803,7 +803,7 @@ func renderSelector(status WorktreeStatus, cursor int, pendingByBranch map[strin
 		b.WriteString("\n")
 	}
 	createIdx := len(worktrees)
-	createLine := formatSelectorLine("+ New worktree", "", "", "", "", branchWidth, prWidth, prStateWidth, ciWidth, approvedWidth)
+	createLine := formatSelectorLine("+ New worktree", "", "", "", "", branchWidth, prWidth, ciWidth, approvedWidth, prStateWidth)
 	if createIdx == cursor {
 		b.WriteString("  " + selectorSelectedStyle.Render(createLine))
 	} else {
@@ -812,12 +812,12 @@ func renderSelector(status WorktreeStatus, cursor int, pendingByBranch map[strin
 	return b.String()
 }
 
-func formatSelectorLine(branch string, pr string, prState string, ci string, approved string, branchWidth int, prWidth int, prStateWidth int, ciWidth int, approvedWidth int) string {
+func formatSelectorLine(branch string, pr string, ci string, approved string, prState string, branchWidth int, prWidth int, ciWidth int, approvedWidth int, prStateWidth int) string {
 	return padOrTrim(branch, branchWidth) + " " +
 		padOrTrim(pr, prWidth) + " " +
-		padOrTrim(prState, prStateWidth) + " " +
 		padOrTrim(ci, ciWidth) + " " +
-		padOrTrim(approved, approvedWidth)
+		padOrTrim(approved, approvedWidth) + " " +
+		padOrTrim(prState, prStateWidth)
 }
 
 func padOrTrim(s string, width int) string {
@@ -999,7 +999,7 @@ func formatPRStatusLabel(wt WorktreeInfo, pending bool, loadingGlyph string) str
 		return "-"
 	}
 	switch status {
-	case "open", "closed", "merged":
+	case "draft", "open", "closed", "merged":
 		return status
 	default:
 		return "-"
