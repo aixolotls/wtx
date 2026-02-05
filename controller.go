@@ -1,5 +1,12 @@
 package main
 
+import (
+	"errors"
+	"os/exec"
+	"runtime"
+	"strings"
+)
+
 type Controller struct {
 	runner *AgentRunner
 }
@@ -18,4 +25,19 @@ func (c *Controller) OpenShellInWorktree(worktreePath string, branch string, loc
 
 func (c *Controller) AgentAvailable() (bool, string) {
 	return c.runner.Available()
+}
+
+func (c *Controller) OpenURL(url string) error {
+	url = strings.TrimSpace(url)
+	if url == "" {
+		return errors.New("no PR URL for selected worktree")
+	}
+	var cmd *exec.Cmd
+	switch runtime.GOOS {
+	case "darwin":
+		cmd = exec.Command("open", url)
+	default:
+		cmd = exec.Command("xdg-open", url)
+	}
+	return cmd.Start()
 }

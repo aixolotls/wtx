@@ -77,16 +77,25 @@ func NewGHManager() *GHManager {
 	}
 }
 
-func (m *GHManager) PRDataByBranch(repoRoot string, branches []string) map[string]PRData {
+func (m *GHManager) PRDataByBranch(repoRoot string, branches []string) (map[string]PRData, error) {
+	return m.prDataByBranch(repoRoot, branches, false)
+}
+
+func (m *GHManager) PRDataByBranchForce(repoRoot string, branches []string) (map[string]PRData, error) {
+	return m.prDataByBranch(repoRoot, branches, true)
+}
+
+func (m *GHManager) prDataByBranch(repoRoot string, branches []string, force bool) (map[string]PRData, error) {
 	repoRoot = strings.TrimSpace(repoRoot)
 	if repoRoot == "" || len(branches) == 0 {
-		return map[string]PRData{}
+		return map[string]PRData{}, nil
 	}
 	m.mu.Lock()
 	cached, ok := m.cache[repoRoot]
-	fresh := ok && time.Since(cached.fetchedAt) < m.ttl
+	fresh := !force && ok && time.Since(cached.fetchedAt) < m.ttl
 	m.mu.Unlock()
 
+	var fetchErr error
 	if !fresh {
 		prs, err := m.fetchRepoPRData(repoRoot, branches)
 		if err == nil {
@@ -94,6 +103,8 @@ func (m *GHManager) PRDataByBranch(repoRoot string, branches []string) map[strin
 			m.cache[repoRoot] = ghRepoCache{fetchedAt: time.Now(), prs: prs}
 			cached = m.cache[repoRoot]
 			m.mu.Unlock()
+		} else {
+			fetchErr = err
 		}
 	}
 
@@ -103,7 +114,7 @@ func (m *GHManager) PRDataByBranch(repoRoot string, branches []string) map[strin
 			out[b] = d
 		}
 	}
-	return out
+	return out, fetchErr
 }
 
 func (m *GHManager) fetchRepoPRData(repoRoot string, branches []string) (map[string]PRData, error) {
@@ -116,9 +127,13 @@ func (m *GHManager) fetchRepoPRData(repoRoot string, branches []string) (map[str
 	}
 	cmd := exec.Command(ghPath, "pr", "list", "--state", "open", "--json", "number,url,headRefName,reviewDecision,statusCheckRollup", "--limit", "200")
 	cmd.Dir = repoRoot
-	out, err := cmd.Output()
+	out, err := cmd.CombinedOutput()
 	if err != nil {
-		return nil, err
+		msg := strings.TrimSpace(string(out))
+		if msg == "" {
+			return nil, err
+		}
+		return nil, fmt.Errorf("%w: %s", err, msg)
 	}
 	var prs []ghPR
 	if err := json.Unmarshal(out, &prs); err != nil {

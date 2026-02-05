@@ -117,8 +117,22 @@ func (m *WorktreeManager) Status() WorktreeStatus {
 }
 
 func (m *WorktreeManager) PRDataForStatus(status WorktreeStatus) map[string]PRData {
+	data, _ := m.prDataForStatus(status, false)
+	return data
+}
+
+func (m *WorktreeManager) PRDataForStatusForce(status WorktreeStatus) map[string]PRData {
+	data, _ := m.prDataForStatus(status, true)
+	return data
+}
+
+func (m *WorktreeManager) PRDataForStatusWithError(status WorktreeStatus, force bool) (map[string]PRData, error) {
+	return m.prDataForStatus(status, force)
+}
+
+func (m *WorktreeManager) prDataForStatus(status WorktreeStatus, force bool) (map[string]PRData, error) {
 	if !status.InRepo || strings.TrimSpace(status.RepoRoot) == "" {
-		return map[string]PRData{}
+		return map[string]PRData{}, nil
 	}
 	branches := make([]string, 0, len(status.Worktrees))
 	for _, wt := range status.Worktrees {
@@ -127,6 +141,9 @@ func (m *WorktreeManager) PRDataForStatus(status WorktreeStatus) map[string]PRDa
 			continue
 		}
 		branches = append(branches, b)
+	}
+	if force {
+		return m.ghMgr.PRDataByBranchForce(status.RepoRoot, branches)
 	}
 	return m.ghMgr.PRDataByBranch(status.RepoRoot, branches)
 }

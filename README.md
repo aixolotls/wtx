@@ -1,6 +1,6 @@
 # wtx
 
-`wtx` is a small CLI for managing and jumping between git worktrees with a fast, interactive picker.
+`wtx` is an interactive CLI for managing and jumping between Git worktrees.
 
 ## Install
 
@@ -8,14 +8,59 @@
 go install github.com/mrbonezy/wtx@latest
 ```
 
+Yes, `go install github.com/mrbonezy/wtx@latest` is still the correct install command.
+
+## Prerequisites
+
+- `git` (required)
+- `tmux` (required for the "use worktree" / "open shell here" flow)
+- `gh` (optional, for PR/CI/review data)
+- iTerm2 (optional, for tab title/color integration)
+
+## Initialize
+
+```sh
+wtx init
+```
+
 ## Usage
 
 ```sh
 wtx
-wtx setup
-wtx version
-wtx check
 ```
+
+Inside the picker:
+
+- `enter`: actions for selected free worktree
+- `d`: delete selected worktree (with confirmation)
+- `u`: unlock selected locked worktree (with confirmation)
+- `r`: manual refresh (bypasses GH cache)
+- `q`: quit
+
+## Features
+
+- Fast interactive worktree selector
+- Create worktree from:
+  - a new branch name
+  - an existing local branch
+- Reuse an existing worktree by selecting `Use <branch>`
+- Open a shell directly in a selected worktree
+- Locking to prevent concurrent worktree use
+- Force-unlock flow for locked worktrees (`u`)
+- Orphaned worktree detection and disabled selection
+- Branch list filtering + recently-used ordering
+- Live local status polling in the root menu (`1s`)
+- GitHub integration (if `gh` is installed):
+  - PR link
+  - CI status and progress
+  - review summary
+- Tmux integration:
+  - auto-starts inside a fresh tmux session when launched outside tmux
+  - custom bottom status line
+  - periodic tmux GH/status refresh
+- iTerm integration:
+  - tab title (`wtx`, then `wtx - <branch>`)
+  - tab color set/reset
 
 ## Build
 

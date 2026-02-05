@@ -29,6 +29,8 @@ type model struct {
 	ghDataByBranch    map[string]PRData
 	ghLoadedKey       string
 	ghFetchingKey     string
+	forceGHRefresh    bool
+	ghWarnMsg         string
 	errMsg            string
 	warnMsg           string
 	creatingBranch    string
@@ -80,6 +82,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.ghDataByBranch = map[string]PRData{}
 			m.ghLoadedKey = ""
 			m.ghFetchingKey = ""
+			m.ghWarnMsg = ""
 			return m, nil
 		}
 		if key == m.ghLoadedKey || key == m.ghFetchingKey {
@@ -94,7 +97,9 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if len(m.ghPendingByBranch) == 0 {
 			return m, nil
 		}
-		return m, tea.Batch(fetchGHDataCmd(m.mgr, m.status, key), m.ghSpinner.Tick)
+		force := m.forceGHRefresh
+		m.forceGHRefresh = false
+		return m, tea.Batch(fetchGHDataCmd(m.mgr, m.status, key, force), m.ghSpinner.Tick)
 	case ghDataMsg:
 		if strings.TrimSpace(msg.repoRoot) == "" || strings.TrimSpace(m.status.RepoRoot) == "" {
 			return m, nil
@@ -106,6 +111,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			// Ignore stale GH responses that raced with a newer status snapshot.
 			return m, nil
 		}
+		m.ghWarnMsg = ghWarningFromErr(msg.err)
 		m.ghDataByBranch = msg.byBranch
 		applyPRDataToStatus(&m.status, m.ghDataByBranch)
 		m.ghPendingByBranch = map[string]bool{}
@@ -436,6 +442,8 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.ghFetchingKey = ""
 			m.ghPendingByBranch = map[string]bool{}
 			m.ghDataByBranch = map[string]PRData{}
+			m.ghWarnMsg = ""
+			m.forceGHRefresh = true
 			return m, fetchStatusCmd(m.mgr)
 		case "up", "k":
 			if m.listIndex > 0 {
@@ -478,6 +486,19 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.mode = modeDelete
 				m.deletePath = row.Path
 				m.deleteBranch = row.Branch
+				m.errMsg = ""
+				return m, nil
+			}
+		case "p":
+			if row, ok := selectedWorktree(m.status, m.listIndex); ok {
+				if strings.TrimSpace(row.PRURL) == "" {
+					m.errMsg = "No PR URL for selected worktree."
+					return m, nil
+				}
+				if err := m.ctrl.OpenURL(row.PRURL); err != nil {
+					m.errMsg = err.Error()
+					return m, nil
+				}
 				m.errMsg = ""
 				return m, nil
 			}
@@ -632,6 +653,10 @@ func (m model) View() string {
 		b.WriteString(warnStyle.Render(m.warnMsg))
 		b.WriteString("\n")
 	}
+	if m.ghWarnMsg != "" {
+		b.WriteString(warnStyle.Render(m.ghWarnMsg))
+		b.WriteString("\n")
+	}
 	if len(m.status.Malformed) > 0 {
 		b.WriteString("\nMalformed entries:\n")
 		for _, line := range m.status.Malformed {
@@ -653,10 +678,14 @@ func (m model) View() string {
 	} else if isCreateRow(m.listIndex, m.status) {
 		help = "Press enter for actions, r to refresh, q to quit."
 	} else if wt, ok := selectedWorktree(m.status, m.listIndex); ok {
+		prHint := ""
+		if strings.TrimSpace(wt.PRURL) != "" {
+			prHint = ", p to open PR"
+		}
 		if !wt.Available && !isOrphanedPath(m.status, wt.Path) {
-			help = "Press u to unlock, d to delete, r to refresh, q to quit."
+			help = "Press u to unlock, d to delete" + prHint + ", r to refresh, q to quit."
 		} else {
-			help = "Press enter for actions, d to delete, r to refresh, q to quit."
+			help = "Press enter for actions, d to delete" + prHint + ", r to refresh, q to quit."
 		}
 	}
 	b.WriteString(help + "\n")
@@ -669,6 +698,7 @@ type ghDataMsg struct {
 	repoRoot string
 	key      string
 	byBranch map[string]PRData
+	err      error
 }
 type createWorktreeDoneMsg struct {
 	created WorktreeInfo
@@ -687,12 +717,20 @@ func pollStatusTickCmd() tea.Cmd {
 	})
 }
 
-func fetchGHDataCmd(mgr *WorktreeManager, status WorktreeStatus, key string) tea.Cmd {
+func fetchGHDataCmd(mgr *WorktreeManager, status WorktreeStatus, key string, force bool) tea.Cmd {
 	return func() tea.Msg {
+		var byBranch map[string]PRData
+		var err error
+		if force {
+			byBranch, err = mgr.PRDataForStatusWithError(status, true)
+		} else {
+			byBranch, err = mgr.PRDataForStatusWithError(status, false)
+		}
 		return ghDataMsg{
 			repoRoot: status.RepoRoot,
 			key:      key,
-			byBranch: mgr.PRDataForStatus(status),
+			byBranch: byBranch,
+			err:      err,
 		}
 	}
 }
@@ -1088,6 +1126,27 @@ func ghDataKeyForStatus(status WorktreeStatus) string {
 	}
 	sort.Strings(branches)
 	return repo + "|" + strings.Join(branches, ",")
+}
+
+func ghWarningFromErr(err error) string {
+	if err == nil {
+		return ""
+	}
+	msg := strings.ToLower(strings.TrimSpace(err.Error()))
+	switch {
+	case strings.Contains(msg, "executable file not found"),
+		strings.Contains(msg, "no such file or directory"),
+		strings.Contains(msg, "gh: command not found"):
+		return "GitHub CLI not available. Install `gh` to show PR/CI/review."
+	case strings.Contains(msg, "gh auth login"),
+		strings.Contains(msg, "not logged"),
+		strings.Contains(msg, "authentication"),
+		strings.Contains(msg, "http 401"),
+		strings.Contains(msg, "requires authentication"):
+		return "GitHub CLI not authenticated. Run `gh auth login`."
+	default:
+		return "GitHub data unavailable right now."
+	}
 }
 
 func worktreesForDisplay(status WorktreeStatus) []WorktreeInfo {

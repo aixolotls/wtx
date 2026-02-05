@@ -85,7 +85,7 @@ func ghSummaryForBranchCached(worktreePath string, branch string) string {
 }
 
 func ghSummaryForRepoBranch(repoRoot string, branch string) string {
-	data := NewGHManager().PRDataByBranch(repoRoot, []string{branch})
+	data, _ := NewGHManager().PRDataByBranch(repoRoot, []string{branch})
 	pr, ok := data[branch]
 	if !ok {
 		return "GH: PR - | CI - | Review -"
