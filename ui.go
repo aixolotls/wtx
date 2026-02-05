@@ -612,6 +612,7 @@ func (m model) View() string {
 		return b.String()
 	}
 	b.WriteString(baseStyle.Render(renderSelector(m.status, m.listIndex, m.ghPendingByBranch, m.ghSpinner.View())))
+	b.WriteString("\n")
 	if m.status.Err != nil {
 		b.WriteString(errorStyle.Render(fmt.Sprintf("Error: %v", m.status.Err)))
 		b.WriteString("\n")
@@ -644,12 +645,6 @@ func (m model) View() string {
 		b.WriteString("\n")
 		b.WriteString(secondaryStyle.Render(selectedPath))
 		b.WriteString("\n")
-		if wt, ok := selectedWorktree(m.status, m.listIndex); ok {
-			if wt.HasPR && strings.TrimSpace(wt.PRURL) != "" {
-				b.WriteString(secondaryStyle.Render("PR: " + wt.PRURL))
-				b.WriteString("\n")
-			}
-		}
 	}
 	b.WriteString("\n")
 	help := "Press r to refresh, q to quit."
@@ -722,7 +717,7 @@ func renderSelector(status WorktreeStatus, cursor int, pendingByBranch map[strin
 	}
 	const (
 		branchWidth   = 40
-		prWidth       = 8
+		prWidth       = 44
 		ciWidth       = 12
 		approvedWidth = 12
 	)
@@ -944,7 +939,13 @@ func formatPRLabel(wt WorktreeInfo, pending bool, loadingGlyph string) string {
 	if pending {
 		return loadingGlyph
 	}
-	if !wt.HasPR || wt.PRNumber <= 0 {
+	if !wt.HasPR {
+		return "-"
+	}
+	if strings.TrimSpace(wt.PRURL) != "" {
+		return strings.TrimSpace(wt.PRURL)
+	}
+	if wt.PRNumber <= 0 {
 		return "-"
 	}
 	return fmt.Sprintf("#%d", wt.PRNumber)
