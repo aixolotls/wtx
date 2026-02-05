@@ -110,6 +110,66 @@ func (m *WorktreeManager) CreateWorktree(branch string) (WorktreeInfo, error) {
 	return WorktreeInfo{Path: target, Branch: branch}, nil
 }
 
+func (m *WorktreeManager) CreateWorktreeFromBranch(branch string) (WorktreeInfo, error) {
+	branch = strings.TrimSpace(branch)
+	if branch == "" {
+		return WorktreeInfo{}, errors.New("branch name required")
+	}
+
+	gitPath, err := exec.LookPath("git")
+	if err != nil {
+		return WorktreeInfo{}, errors.New("git not installed")
+	}
+
+	repoRoot, err := gitOutputInDir(m.cwd, gitPath, "rev-parse", "--show-toplevel")
+	if err != nil || strings.TrimSpace(repoRoot) == "" {
+		return WorktreeInfo{}, errors.New("not in a git repository")
+	}
+
+	target, err := nextWorktreePath(repoRoot)
+	if err != nil {
+		return WorktreeInfo{}, err
+	}
+
+	cmd := exec.Command(gitPath, "worktree", "add", target, branch)
+	cmd.Dir = repoRoot
+	if err := cmd.Run(); err != nil {
+		return WorktreeInfo{}, err
+	}
+
+	return WorktreeInfo{Path: target, Branch: branch}, nil
+}
+
+func (m *WorktreeManager) ListLocalBranchesByRecentUse() ([]string, error) {
+	gitPath, err := exec.LookPath("git")
+	if err != nil {
+		return nil, errors.New("git not installed")
+	}
+
+	repoRoot, err := gitOutputInDir(m.cwd, gitPath, "rev-parse", "--show-toplevel")
+	if err != nil || strings.TrimSpace(repoRoot) == "" {
+		return nil, errors.New("not in a git repository")
+	}
+
+	cmd := exec.Command(gitPath, "for-each-ref", "--sort=-committerdate", "--format=%(refname:short)", "refs/heads")
+	cmd.Dir = repoRoot
+	output, err := cmd.Output()
+	if err != nil {
+		return nil, err
+	}
+
+	lines := strings.Split(string(output), "\n")
+	branches := make([]string, 0, len(lines))
+	for _, raw := range lines {
+		name := strings.TrimSpace(raw)
+		if name == "" {
+			continue
+		}
+		branches = append(branches, name)
+	}
+	return branches, nil
+}
+
 func (m *WorktreeManager) DeleteWorktree(path string, force bool) error {
 	path = strings.TrimSpace(path)
 	if path == "" {

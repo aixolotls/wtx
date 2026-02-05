@@ -3,6 +3,7 @@ package main
 import (
 	"fmt"
 	"os"
+	"strings"
 
 	tea "github.com/charmbracelet/bubbletea"
 )
@@ -25,6 +26,14 @@ func run(args []string) error {
 		}
 	}
 
+	handled, err := ensureFreshTmuxSession(args)
+	if err != nil {
+		return err
+	}
+	if handled {
+		return nil
+	}
+
 	exists, err := ConfigExists()
 	if err != nil {
 		return err
@@ -33,6 +42,30 @@ func run(args []string) error {
 		return fmt.Errorf("wtx not initialized. run: wtx init")
 	}
 
+	setITermWTXTab()
+	setStartupStatusBanner()
+
+	shouldResetTabColor := true
+	defer func() {
+		if shouldResetTabColor {
+			resetITermTabColor()
+		}
+	}()
+
 	p := tea.NewProgram(newModel())
-	return p.Start()
+	finalModel, err := p.Run()
+	if err != nil {
+		return err
+	}
+	if m, ok := finalModel.(model); ok {
+		path, branch := m.PendingWorktree()
+		if strings.TrimSpace(path) != "" {
+			shouldResetTabColor = false
+			ctrl := NewController()
+			if _, err := ctrl.UseWorktree(path, branch); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
 }

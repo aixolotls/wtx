@@ -3,7 +3,9 @@ package main
 import (
 	"fmt"
 	"strings"
+	"time"
 
+	"github.com/charmbracelet/bubbles/spinner"
 	"github.com/charmbracelet/bubbles/table"
 	"github.com/charmbracelet/bubbles/textinput"
 	tea "github.com/charmbracelet/bubbletea"
@@ -11,36 +13,48 @@ import (
 )
 
 type model struct {
-	mgr    *WorktreeManager
-	status WorktreeStatus
-	table  table.Model
-	ready  bool
-	width  int
-	height int
-	mode   uiMode
-	input  textinput.Model
-	branchInput textinput.Model
-	errMsg string
-	deletePath   string
-	deleteBranch string
-	actionBranch string
-	actionIndex  int
+	mgr               *WorktreeManager
+	ctrl              *Controller
+	status            WorktreeStatus
+	table             table.Model
+	ready             bool
+	width             int
+	height            int
+	mode              uiMode
+	branchInput       textinput.Model
+	newBranchInput    textinput.Model
+	spinner           spinner.Model
+	errMsg            string
+	warnMsg           string
+	creatingBranch    string
+	deletePath        string
+	deleteBranch      string
+	actionBranch      string
+	actionIndex       int
+	actionCreate      bool
 	branchOptions     []string
 	branchSuggestions []string
 	branchIndex       int
+	pendingPath       string
+	pendingBranch     string
+}
+
+func (m model) PendingWorktree() (string, string) {
+	return m.pendingPath, m.pendingBranch
 }
 
 func newModel() model {
 	mgr := NewWorktreeManager("")
-	m := model{mgr: mgr}
+	m := model{mgr: mgr, ctrl: NewController()}
 	m.table = newTable()
-	m.input = newTextInput()
 	m.branchInput = newBranchInput()
+	m.newBranchInput = newCreateBranchInput()
+	m.spinner = newSpinner()
 	return m
 }
 
 func (m model) Init() tea.Cmd {
-	return tea.Batch(fetchStatusCmd(m.mgr), tea.ExitAltScreen, tea.ClearScreen)
+	return fetchStatusCmd(m.mgr)
 }
 
 func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
@@ -50,11 +64,35 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.table.SetRows(worktreeRows(m.status))
 		m.ready = true
 		return m, nil
+	case createWorktreeDoneMsg:
+		m.mode = modeList
+		m.creatingBranch = ""
+		m.actionCreate = false
+		if msg.err != nil {
+			m.errMsg = msg.err.Error()
+			return m, nil
+		}
+		m.errMsg = ""
+		return m, fetchStatusCmd(m.mgr)
+	case spinner.TickMsg:
+		if m.mode != modeCreating {
+			return m, nil
+		}
+		var cmd tea.Cmd
+		m.spinner, cmd = m.spinner.Update(msg)
+		return m, cmd
 	case tea.WindowSizeMsg:
 		m.width = msg.Width
 		m.height = msg.Height
 		return m, nil
 	case tea.KeyMsg:
+		if m.mode == modeCreating {
+			switch msg.String() {
+			case "q", "ctrl+c":
+				return m, tea.Quit
+			}
+			return m, nil
+		}
 		if m.mode == modeDelete {
 			switch msg.String() {
 			case "y", "Y":
@@ -78,32 +116,32 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 			return m, nil
 		}
-		if m.mode == modeCreate {
+		if m.mode == modeBranchName {
 			switch msg.String() {
 			case "esc":
-				m.mode = modeList
-				m.input.Blur()
+				m.mode = modeAction
+				m.newBranchInput.Blur()
+				m.newBranchInput.SetValue("")
 				m.errMsg = ""
 				return m, nil
 			case "enter":
-				branch := strings.TrimSpace(m.input.Value())
+				branch := strings.TrimSpace(m.newBranchInput.Value())
 				if branch == "" {
 					m.errMsg = "Branch name required."
 					return m, nil
 				}
-				_, err := m.mgr.CreateWorktree(branch)
-				if err != nil {
-					m.errMsg = err.Error()
-					return m, nil
-				}
-				m.mode = modeList
-				m.input.Blur()
-				m.input.SetValue("")
+				m.mode = modeCreating
+				m.creatingBranch = branch
+				m.newBranchInput.Blur()
+				m.newBranchInput.SetValue("")
 				m.errMsg = ""
-				return m, fetchStatusCmd(m.mgr)
+				return m, tea.Batch(
+					m.spinner.Tick,
+					createWorktreeCmd(m.mgr, branch),
+				)
 			}
 			var cmd tea.Cmd
-			m.input, cmd = m.input.Update(msg)
+			m.newBranchInput, cmd = m.newBranchInput.Update(msg)
 			return m, cmd
 		}
 		if m.mode == modeAction {
@@ -112,6 +150,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.mode = modeList
 				m.actionIndex = 0
 				m.actionBranch = ""
+				m.actionCreate = false
 				return m, nil
 			case "up", "k":
 				if m.actionIndex > 0 {
@@ -119,24 +158,74 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				}
 				return m, nil
 			case "down", "j":
-				if m.actionIndex < len(actionItems(m.actionBranch, m.status.BaseRef))-1 {
+				if m.actionIndex < len(currentActionItems(m.actionBranch, m.status.BaseRef, m.actionCreate))-1 {
 					m.actionIndex++
 				}
 				return m, nil
 			case "enter":
+				if m.actionCreate {
+					if m.actionIndex == 0 {
+						m.mode = modeBranchName
+						m.newBranchInput.SetValue("")
+						m.newBranchInput.Focus()
+						m.errMsg = ""
+						return m, nil
+					}
+					if m.actionIndex == 1 {
+						options, err := availableBranchOptions(m.status, m.mgr)
+						if err != nil {
+							m.errMsg = err.Error()
+							return m, nil
+						}
+						m.mode = modeBranchPick
+						m.branchOptions = options
+						m.branchSuggestions = filterBranches(m.branchOptions, "")
+						m.branchIndex = 0
+						m.branchInput.SetValue("")
+						m.branchInput.Focus()
+						return m, nil
+					}
+				}
+				if m.actionIndex == 1 {
+					m.mode = modeBranchName
+					m.newBranchInput.SetValue("")
+					m.newBranchInput.Focus()
+					m.errMsg = ""
+					return m, nil
+				}
 				if m.actionIndex == 2 {
+					options, err := availableBranchOptions(m.status, m.mgr)
+					if err != nil {
+						m.errMsg = err.Error()
+						return m, nil
+					}
 					m.mode = modeBranchPick
-					m.branchOptions = uniqueBranches(m.status)
+					m.branchOptions = options
 					m.branchSuggestions = filterBranches(m.branchOptions, "")
 					m.branchIndex = 0
 					m.branchInput.SetValue("")
 					m.branchInput.Focus()
 					return m, nil
 				}
+				if m.actionIndex == 0 {
+					if row, ok := selectedWorktree(m.status, m.table.Cursor()); ok {
+						m.errMsg = ""
+						m.warnMsg = ""
+						if ok, warn := m.ctrl.AgentAvailable(); !ok {
+							m.warnMsg = warn
+							m.mode = modeList
+							return m, nil
+						}
+						m.pendingPath = row.Path
+						m.pendingBranch = row.Branch
+						return m, tea.Quit
+					}
+				}
 				m.errMsg = "Not implemented yet."
 				m.mode = modeList
 				m.actionIndex = 0
 				m.actionBranch = ""
+				m.actionCreate = false
 				return m, nil
 			}
 			return m, nil
@@ -144,7 +233,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if m.mode == modeBranchPick {
 			switch msg.String() {
 			case "esc":
-				m.mode = modeList
+				m.mode = modeAction
 				m.branchInput.Blur()
 				m.branchSuggestions = nil
 				m.branchIndex = 0
@@ -160,8 +249,25 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				}
 				return m, nil
 			case "enter":
+				if m.actionCreate {
+					branch, ok := selectedBranch(m.branchSuggestions, m.branchIndex)
+					if !ok {
+						m.errMsg = "Select an existing branch."
+						return m, nil
+					}
+					m.mode = modeCreating
+					m.creatingBranch = branch
+					m.branchInput.Blur()
+					m.branchSuggestions = nil
+					m.branchIndex = 0
+					m.errMsg = ""
+					return m, tea.Batch(
+						m.spinner.Tick,
+						createWorktreeFromExistingCmd(m.mgr, branch),
+					)
+				}
 				m.errMsg = "Not implemented yet."
-				m.mode = modeList
+				m.mode = modeAction
 				m.branchInput.Blur()
 				m.branchSuggestions = nil
 				m.branchIndex = 0
@@ -182,13 +288,20 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, fetchStatusCmd(m.mgr)
 		case "enter":
 			if isCreateRow(m.table.Cursor(), m.status) {
-				m.mode = modeCreate
-				m.input.Focus()
+				m.mode = modeAction
+				m.actionCreate = true
+				m.actionBranch = ""
+				m.actionIndex = 0
 				m.errMsg = ""
 				return m, nil
 			}
 			if row, ok := selectedWorktree(m.status, m.table.Cursor()); ok {
+				if isOrphanedPath(m.status, row.Path) {
+					m.errMsg = "Cannot open actions for orphaned worktree."
+					return m, nil
+				}
 				m.mode = modeAction
+				m.actionCreate = false
 				m.actionBranch = row.Branch
 				m.actionIndex = 0
 				m.errMsg = ""
@@ -239,20 +352,13 @@ func (m model) View() string {
 		return b.String()
 	}
 
-	if m.mode == modeCreate {
-		b.WriteString("New worktree branch:\n")
-		b.WriteString(inputStyle.Render(m.input.View()))
-		b.WriteString("\n")
-		if m.errMsg != "" {
-			b.WriteString(errorStyle.Render(m.errMsg))
-			b.WriteString("\n")
-		}
-		b.WriteString("\nPress enter to create, esc to cancel.\n")
-		return b.String()
-	}
 	if m.mode == modeAction {
-		b.WriteString("Worktree actions:\n")
-		for i, item := range actionItems(m.actionBranch, m.status.BaseRef) {
+		title := "Worktree actions:"
+		if m.actionCreate {
+			title = "New worktree actions:"
+		}
+		b.WriteString(title + "\n")
+		for i, item := range currentActionItems(m.actionBranch, m.status.BaseRef, m.actionCreate) {
 			line := "  " + actionNormalStyle.Render(item)
 			if i == m.actionIndex {
 				line = "  " + actionSelectedStyle.Render(item)
@@ -260,6 +366,21 @@ func (m model) View() string {
 			b.WriteString(line + "\n")
 		}
 		b.WriteString("\nPress enter to select, esc to cancel.\n")
+		return b.String()
+	}
+	if m.mode == modeBranchName {
+		title := "New branch name:"
+		if m.actionCreate {
+			title = "New worktree branch:"
+		}
+		b.WriteString(title + "\n")
+		b.WriteString(inputStyle.Render(m.newBranchInput.View()))
+		b.WriteString("\n")
+		if m.errMsg != "" {
+			b.WriteString(errorStyle.Render(m.errMsg))
+			b.WriteString("\n")
+		}
+		b.WriteString("\nPress enter to create, esc to cancel.\n")
 		return b.String()
 	}
 	if m.mode == modeBranchPick {
@@ -292,6 +413,17 @@ func (m model) View() string {
 		b.WriteString(errorStyle.Render(m.errMsg))
 		b.WriteString("\n")
 	}
+	if m.mode == modeCreating {
+		b.WriteString("\n")
+		b.WriteString(m.spinner.View())
+		b.WriteString(" Creating ")
+		b.WriteString(branchStyle.Render(m.creatingBranch))
+		b.WriteString("...\n")
+	}
+	if m.warnMsg != "" {
+		b.WriteString(warnStyle.Render(m.warnMsg))
+		b.WriteString("\n")
+	}
 	if len(m.status.Malformed) > 0 {
 		b.WriteString("\nMalformed entries:\n")
 		for _, line := range m.status.Malformed {
@@ -308,7 +440,11 @@ func (m model) View() string {
 	}
 	b.WriteString("\n")
 	help := "Press q to quit."
-	if _, ok := selectedWorktree(m.status, m.table.Cursor()); ok {
+	if m.mode == modeCreating {
+		help = "Creating worktree..."
+	} else if isCreateRow(m.table.Cursor(), m.status) {
+		help = "Press enter for actions, q to quit."
+	} else if _, ok := selectedWorktree(m.status, m.table.Cursor()); ok {
 		help = "Press enter for actions, d to delete, q to quit."
 	}
 	b.WriteString(help + "\n")
@@ -316,10 +452,28 @@ func (m model) View() string {
 }
 
 type statusMsg WorktreeStatus
+type createWorktreeDoneMsg struct {
+	created WorktreeInfo
+	err     error
+}
 
 func fetchStatusCmd(mgr *WorktreeManager) tea.Cmd {
 	return func() tea.Msg {
 		return statusMsg(mgr.Status())
+	}
+}
+
+func createWorktreeCmd(mgr *WorktreeManager, branch string) tea.Cmd {
+	return func() tea.Msg {
+		created, err := mgr.CreateWorktree(branch)
+		return createWorktreeDoneMsg{created: created, err: err}
+	}
+}
+
+func createWorktreeFromExistingCmd(mgr *WorktreeManager, branch string) tea.Cmd {
+	return func() tea.Msg {
+		created, err := mgr.CreateWorktreeFromBranch(branch)
+		return createWorktreeDoneMsg{created: created, err: err}
 	}
 }
 
@@ -352,7 +506,7 @@ func worktreeRows(status WorktreeStatus) []table.Row {
 	for _, wt := range status.Worktrees {
 		label := wt.Branch
 		if orphaned[wt.Path] {
-			label = disabledStyle.Render(fmt.Sprintf("%s (orphaned)", wt.Branch))
+			label = fmt.Sprintf("%s (orphaned)", wt.Branch)
 		}
 		statusLabel := "Free"
 		if strings.Contains(strings.ToLower(wt.Branch), "main") {
@@ -383,20 +537,20 @@ func tableStyles() table.Styles {
 }
 
 var (
-	baseStyle  = lipgloss.NewStyle()
+	baseStyle   = lipgloss.NewStyle()
 	bannerStyle = lipgloss.NewStyle().
 			Bold(true).
 			Foreground(lipgloss.Color("#FFF7DB")).
 			Background(lipgloss.Color("#7D56F4")).
 			Padding(0, 1)
-	errorStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("1")).Bold(true)
-	secondaryStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("245"))
-	disabledStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("245")).Faint(true)
-	actionNormalStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("251"))
+	errorStyle          = lipgloss.NewStyle().Foreground(lipgloss.Color("1")).Bold(true)
+	secondaryStyle      = lipgloss.NewStyle().Foreground(lipgloss.Color("245"))
+	actionNormalStyle   = lipgloss.NewStyle().Foreground(lipgloss.Color("251"))
 	actionSelectedStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("15")).Background(lipgloss.Color("8")).Bold(true)
-	branchStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("15")).Bold(true)
-	inputStyle = lipgloss.NewStyle().
-			Padding(0, 1)
+	branchStyle         = lipgloss.NewStyle().Foreground(lipgloss.Color("15")).Bold(true)
+	warnStyle           = lipgloss.NewStyle().Foreground(lipgloss.Color("3")).Bold(true)
+	inputStyle          = lipgloss.NewStyle().
+				Padding(0, 1)
 )
 
 func max(a int, b int) int {
@@ -410,23 +564,24 @@ type uiMode int
 
 const (
 	modeList uiMode = iota
-	modeCreate
+	modeCreating
 	modeDelete
 	modeAction
+	modeBranchName
 	modeBranchPick
 )
 
-func newTextInput() textinput.Model {
+func newBranchInput() textinput.Model {
 	ti := textinput.New()
-	ti.Placeholder = "feature/my-branch"
+	ti.Placeholder = "branch name"
 	ti.CharLimit = 200
 	ti.Width = 40
 	return ti
 }
 
-func newBranchInput() textinput.Model {
+func newCreateBranchInput() textinput.Model {
 	ti := textinput.New()
-	ti.Placeholder = "branch name"
+	ti.Placeholder = "feature/my-branch"
 	ti.CharLimit = 200
 	ti.Width = 40
 	return ti
@@ -472,6 +627,24 @@ func actionItems(branch string, baseRef string) []string {
 		"Choose an existing branch",
 		"Open shell here",
 	}
+}
+
+func createActionItems(baseRef string) []string {
+	base := strings.TrimSpace(baseRef)
+	if base == "" {
+		base = "main"
+	}
+	return []string{
+		"Checkout new branch from " + branchStyle.Render(base),
+		"Choose an existing branch",
+	}
+}
+
+func currentActionItems(branch string, baseRef string, create bool) []string {
+	if create {
+		return createActionItems(baseRef)
+	}
+	return actionItems(branch, baseRef)
 }
 
 func currentWorktreePath(status WorktreeStatus, cursor int) string {
@@ -521,4 +694,55 @@ func filterBranches(options []string, query string) []string {
 		}
 	}
 	return out
+}
+
+func availableBranchOptions(status WorktreeStatus, mgr *WorktreeManager) ([]string, error) {
+	options, err := mgr.ListLocalBranchesByRecentUse()
+	if err != nil {
+		return nil, err
+	}
+	inUse := make(map[string]bool, len(status.Worktrees))
+	for _, wt := range status.Worktrees {
+		name := strings.TrimSpace(wt.Branch)
+		if name == "" {
+			continue
+		}
+		inUse[name] = true
+	}
+	filtered := make([]string, 0, len(options))
+	for _, opt := range options {
+		if inUse[opt] {
+			continue
+		}
+		filtered = append(filtered, opt)
+	}
+	if len(filtered) == 0 {
+		return nil, fmt.Errorf("no available branches (all branches currently in use)")
+	}
+	return filtered, nil
+}
+
+func selectedBranch(suggestions []string, index int) (string, bool) {
+	if index < 0 || index >= len(suggestions) {
+		return "", false
+	}
+	value := strings.TrimSpace(suggestions[index])
+	return value, value != ""
+}
+
+func nextAutoBranchName(status WorktreeStatus) string {
+	base := strings.TrimSpace(shortBranch(status.BaseRef))
+	if base == "" || base == "detached" {
+		base = "main"
+	}
+	base = strings.ReplaceAll(base, "/", "-")
+	base = strings.ReplaceAll(base, " ", "-")
+	return fmt.Sprintf("wt/%s-%d", base, time.Now().UnixNano())
+}
+
+func newSpinner() spinner.Model {
+	s := spinner.New()
+	s.Spinner = spinner.Dot
+	s.Style = lipgloss.NewStyle().Foreground(lipgloss.Color("#7D56F4"))
+	return s
 }
