@@ -19,8 +19,8 @@ func (c *Controller) UseWorktree(worktreePath string, branch string, lock *Workt
 	return c.runner.RunInWorktree(worktreePath, branch, lock)
 }
 
-func (c *Controller) OpenShellInWorktree(worktreePath string, branch string, lock *WorktreeLock) (AgentRunResult, error) {
-	return c.runner.RunShellInWorktree(worktreePath, branch, lock)
+func (c *Controller) OpenShellInWorktree(worktreePath string, branch string, lock *WorktreeLock, ignoreLock bool) (AgentRunResult, error) {
+	return c.runner.RunShellInWorktree(worktreePath, branch, lock, ignoreLock)
 }
 
 func (c *Controller) AgentAvailable() (bool, string) {

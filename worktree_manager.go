@@ -7,6 +7,8 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"sync"
+	"time"
 )
 
 type WorktreeInfo struct {
@@ -37,9 +39,17 @@ type WorktreeStatus struct {
 }
 
 type WorktreeManager struct {
-	cwd     string
-	lockMgr *LockManager
-	ghMgr   *GHManager
+	cwd            string
+	lockMgr        *LockManager
+	ghMgr          *GHManager
+	baseRefMu      sync.Mutex
+	baseRefCache   map[string]cachedBaseRef
+	baseRefCacheTTL time.Duration
+}
+
+type cachedBaseRef struct {
+	value     string
+	fetchedAt time.Time
 }
 
 func NewWorktreeManager(cwd string, lockMgr *LockManager, ghMgr *GHManager) *WorktreeManager {
@@ -52,7 +62,13 @@ func NewWorktreeManager(cwd string, lockMgr *LockManager, ghMgr *GHManager) *Wor
 	if ghMgr == nil {
 		ghMgr = NewGHManager()
 	}
-	return &WorktreeManager{cwd: cwd, lockMgr: lockMgr, ghMgr: ghMgr}
+	return &WorktreeManager{
+		cwd:            cwd,
+		lockMgr:        lockMgr,
+		ghMgr:          ghMgr,
+		baseRefCache:   map[string]cachedBaseRef{},
+		baseRefCacheTTL: 2 * time.Minute,
+	}
 }
 
 func (m *WorktreeManager) Status() WorktreeStatus {
@@ -72,7 +88,7 @@ func (m *WorktreeManager) Status() WorktreeStatus {
 	}
 	status.InRepo = true
 	status.RepoRoot = repoRoot
-	status.BaseRef = defaultBaseRef(repoRoot, gitPath)
+	status.BaseRef = m.defaultBaseRef(repoRoot, gitPath, false)
 
 	worktrees, malformed, err := listWorktrees(repoRoot, gitPath)
 	if err != nil {
@@ -175,10 +191,15 @@ func (m *WorktreeManager) CreateWorktree(branch string) (WorktreeInfo, error) {
 	}
 	defer lock.Release()
 
-	cmd := exec.Command(gitPath, "worktree", "add", "-b", branch, target, "HEAD")
-	cmd.Dir = repoRoot
-	if err := cmd.Run(); err != nil {
+	baseRef, err := m.prepareBaseRefForCheckout(repoRoot, gitPath)
+	if err != nil {
 		return WorktreeInfo{}, err
+	}
+	cmd := exec.Command(gitPath, "worktree", "add", "-b", branch, target, baseRef)
+	cmd.Dir = repoRoot
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		return WorktreeInfo{}, friendlyBranchCheckoutError(branch, output, err)
 	}
 
 	return WorktreeInfo{Path: target, Branch: branch}, nil
@@ -212,8 +233,9 @@ func (m *WorktreeManager) CreateWorktreeFromBranch(branch string) (WorktreeInfo,
 
 	cmd := exec.Command(gitPath, "worktree", "add", target, branch)
 	cmd.Dir = repoRoot
-	if err := cmd.Run(); err != nil {
-		return WorktreeInfo{}, err
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		return WorktreeInfo{}, friendlyBranchCheckoutError(branch, output, err)
 	}
 
 	return WorktreeInfo{Path: target, Branch: branch}, nil
@@ -299,7 +321,45 @@ func (m *WorktreeManager) CheckoutExistingBranch(worktreePath string, branch str
 	}
 	cmd := exec.Command(gitPath, "checkout", branch)
 	cmd.Dir = worktreePath
-	return cmd.Run()
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		return friendlyBranchCheckoutError(branch, output, err)
+	}
+	return nil
+}
+
+func (m *WorktreeManager) CheckoutNewBranch(worktreePath string, branch string, baseRef string) error {
+	worktreePath = strings.TrimSpace(worktreePath)
+	branch = strings.TrimSpace(branch)
+	baseRef = strings.TrimSpace(baseRef)
+	if worktreePath == "" {
+		return errors.New("worktree path required")
+	}
+	if branch == "" {
+		return errors.New("branch name required")
+	}
+	if baseRef == "" {
+		baseRef = "main"
+	}
+	gitPath, err := exec.LookPath("git")
+	if err != nil {
+		return errors.New("git not installed")
+	}
+	repoRoot, err := gitOutputInDir(worktreePath, gitPath, "rev-parse", "--show-toplevel")
+	if err != nil || strings.TrimSpace(repoRoot) == "" {
+		return errors.New("not in a git repository")
+	}
+	baseRef, err = m.prepareBaseRefForCheckout(repoRoot, gitPath)
+	if err != nil {
+		return err
+	}
+	cmd := exec.Command(gitPath, "checkout", "-b", branch, baseRef)
+	cmd.Dir = worktreePath
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		return friendlyBranchCheckoutError(branch, output, err)
+	}
+	return nil
 }
 
 func (m *WorktreeManager) AcquireWorktreeLock(worktreePath string) (*WorktreeLock, error) {
@@ -418,16 +478,116 @@ func gitOutputInDir(dir string, path string, args ...string) (string, error) {
 	return strings.TrimSpace(string(output)), nil
 }
 
-func defaultBaseRef(repoRoot string, gitPath string) string {
+func (m *WorktreeManager) defaultBaseRef(repoRoot string, gitPath string, force bool) string {
+	repoRoot = strings.TrimSpace(repoRoot)
+	if repoRoot == "" {
+		return "main"
+	}
+	if !force {
+		m.baseRefMu.Lock()
+		cached, ok := m.baseRefCache[repoRoot]
+		fresh := ok && time.Since(cached.fetchedAt) < m.baseRefCacheTTL && strings.TrimSpace(cached.value) != ""
+		m.baseRefMu.Unlock()
+		if fresh {
+			return cached.value
+		}
+	}
+	if ref, err := githubDefaultBranch(repoRoot); err == nil && strings.TrimSpace(ref) != "" {
+		ref = strings.TrimSpace(ref)
+		m.baseRefMu.Lock()
+		m.baseRefCache[repoRoot] = cachedBaseRef{value: ref, fetchedAt: time.Now()}
+		m.baseRefMu.Unlock()
+		return ref
+	}
 	ref, err := gitOutputInDir(repoRoot, gitPath, "symbolic-ref", "--short", "refs/remotes/origin/HEAD")
 	if err == nil && ref != "" {
+		ref = strings.TrimSpace(ref)
+		m.baseRefMu.Lock()
+		m.baseRefCache[repoRoot] = cachedBaseRef{value: ref, fetchedAt: time.Now()}
+		m.baseRefMu.Unlock()
 		return ref
 	}
-	ref, err = gitOutputInDir(repoRoot, gitPath, "symbolic-ref", "--short", "HEAD")
-	if err == nil && ref != "" {
-		return ref
+	if _, err := gitOutputInDir(repoRoot, gitPath, "rev-parse", "--verify", "main"); err == nil {
+		m.baseRefMu.Lock()
+		m.baseRefCache[repoRoot] = cachedBaseRef{value: "main", fetchedAt: time.Now()}
+		m.baseRefMu.Unlock()
+		return "main"
 	}
+	if _, err := gitOutputInDir(repoRoot, gitPath, "rev-parse", "--verify", "master"); err == nil {
+		m.baseRefMu.Lock()
+		m.baseRefCache[repoRoot] = cachedBaseRef{value: "master", fetchedAt: time.Now()}
+		m.baseRefMu.Unlock()
+		return "master"
+	}
+	m.baseRefMu.Lock()
+	m.baseRefCache[repoRoot] = cachedBaseRef{value: "main", fetchedAt: time.Now()}
+	m.baseRefMu.Unlock()
 	return "main"
+}
+
+func (m *WorktreeManager) prepareBaseRefForCheckout(repoRoot string, gitPath string) (string, error) {
+	if err := fetchOrigin(repoRoot, gitPath); err != nil {
+		return "", err
+	}
+	baseRef := strings.TrimSpace(m.defaultBaseRef(repoRoot, gitPath, true))
+	if baseRef == "" {
+		baseRef = "main"
+	}
+	return baseRef, nil
+}
+
+func githubDefaultBranch(repoRoot string) (string, error) {
+	ghPath, err := exec.LookPath("gh")
+	if err != nil {
+		return "", err
+	}
+	cmd := exec.Command(ghPath, "repo", "view", "--json", "defaultBranchRef", "--jq", ".defaultBranchRef.name")
+	cmd.Dir = repoRoot
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		return "", err
+	}
+	branch := strings.TrimSpace(string(output))
+	if branch == "" {
+		return "", errors.New("github default branch not found")
+	}
+	return branch, nil
+}
+
+func fetchOrigin(repoRoot string, gitPath string) error {
+	cmd := exec.Command(gitPath, "remote", "get-url", "origin")
+	cmd.Dir = repoRoot
+	if err := cmd.Run(); err != nil {
+		return nil
+	}
+	fetch := exec.Command(gitPath, "fetch", "origin", "--prune")
+	fetch.Dir = repoRoot
+	output, err := fetch.CombinedOutput()
+	if err != nil {
+		msg := strings.TrimSpace(string(output))
+		if msg != "" {
+			return fmt.Errorf("git fetch origin failed: %s", msg)
+		}
+		return err
+	}
+	return nil
+}
+
+func friendlyBranchCheckoutError(branch string, output []byte, fallback error) error {
+	msg := strings.TrimSpace(string(output))
+	lower := strings.ToLower(msg)
+	switch {
+	case strings.Contains(lower, "already exists"):
+		return fmt.Errorf("branch %q already exists", branch)
+	case strings.Contains(lower, "is already checked out at"):
+		return fmt.Errorf("branch %q is already checked out in another worktree", branch)
+	case strings.Contains(lower, "did not match any file(s) known to git"):
+		return fmt.Errorf("branch %q was not found", branch)
+	}
+	if msg != "" {
+		return errors.New(msg)
+	}
+	return fallback
 }
 
 func worktreePathExists(path string) (bool, error) {

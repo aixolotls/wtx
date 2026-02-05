@@ -60,12 +60,12 @@ func run(args []string) error {
 		return err
 	}
 	if m, ok := finalModel.(model); ok {
-		path, branch, openShell, lock := m.PendingWorktree()
+		path, branch, openShell, lock, ignoreLock := m.PendingWorktree()
 		if strings.TrimSpace(path) != "" {
 			shouldResetTabColor = false
 			ctrl := NewController()
 			if openShell {
-				if _, err := ctrl.OpenShellInWorktree(path, branch, lock); err != nil {
+				if _, err := ctrl.OpenShellInWorktree(path, branch, lock, ignoreLock); err != nil {
 					if lock != nil {
 						lock.Release()
 					}
