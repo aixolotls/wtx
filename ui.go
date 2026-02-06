@@ -49,6 +49,7 @@ type model struct {
 	pendingBranch     string
 	pendingOpenShell  bool
 	pendingLock       *WorktreeLock
+	autoActionPath    string
 }
 
 func (m model) PendingWorktree() (string, string, bool, *WorktreeLock) {
@@ -78,6 +79,16 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case statusMsg:
 		m.status = WorktreeStatus(msg)
 		m.listIndex = clampListIndex(m.listIndex, m.status)
+		if m.autoActionPath != "" {
+			if idx, wt, ok := findWorktreeByPath(m.status, m.autoActionPath); ok {
+				m.listIndex = idx
+				m.mode = modeAction
+				m.actionCreate = false
+				m.actionBranch = wt.Branch
+				m.actionIndex = 0
+				m.autoActionPath = ""
+			}
+		}
 		m.ready = true
 		key := ghDataKeyForStatus(m.status)
 		if key == "" {
@@ -136,6 +147,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		m.errMsg = ""
+		m.autoActionPath = strings.TrimSpace(msg.created.Path)
 		return m, fetchStatusCmd(m.orchestrator)
 	case spinner.TickMsg:
 		cmds := make([]tea.Cmd, 0, 2)
@@ -966,6 +978,20 @@ func currentWorktreePath(status WorktreeStatus, cursor int) string {
 		return ""
 	}
 	return wt.Path
+}
+
+func findWorktreeByPath(status WorktreeStatus, path string) (int, WorktreeInfo, bool) {
+	needle := strings.TrimSpace(path)
+	if needle == "" {
+		return 0, WorktreeInfo{}, false
+	}
+	worktrees := worktreesForDisplay(status)
+	for i, wt := range worktrees {
+		if strings.TrimSpace(wt.Path) == needle {
+			return i, wt, true
+		}
+	}
+	return 0, WorktreeInfo{}, false
 }
 
 func greenCheck() string {

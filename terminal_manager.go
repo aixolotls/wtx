@@ -3,7 +3,6 @@ package main
 import (
 	"fmt"
 	"os"
-	"os/exec"
 	"strings"
 )
 
@@ -29,22 +28,16 @@ func setITermTab(title string) {
 	if title == "" {
 		title = "wtx"
 	}
-	// OSC 0/1/2 set title; use both 1337 and legacy color controls for iTerm.
-	writeTerminalEscape("\x1b]0;" + title + "\x07")
-	writeTerminalEscape("\x1b]1;" + title + "\x07")
-	writeTerminalEscape("\x1b]2;" + title + "\x07")
+	// Outside tmux we control title directly; inside tmux title is managed by tmux.
+	if !inTmux {
+		writeTerminalEscape("\x1b]0;" + title + "\x07")
+		writeTerminalEscape("\x1b]1;" + title + "\x07")
+		writeTerminalEscape("\x1b]2;" + title + "\x07")
+	}
 	writeTerminalEscape("\x1b]1337;SetTabColor=rgb:7d/56/f4\x07")
 	writeTerminalEscape("\x1b]6;1;bg;red;brightness;125\x07")
 	writeTerminalEscape("\x1b]6;1;bg;green;brightness;86\x07")
 	writeTerminalEscape("\x1b]6;1;bg;blue;brightness;244\x07")
-	if inTmux {
-		if sessionID, err := currentSessionID(); err == nil && strings.TrimSpace(sessionID) != "" {
-			_ = exec.Command("tmux", "set-option", "-t", sessionID, "set-titles", "on").Run()
-			_ = exec.Command("tmux", "set-option", "-t", sessionID, "set-titles-string", title).Run()
-		}
-		_ = exec.Command("tmux", "set-window-option", "-q", "automatic-rename", "off").Run()
-		_ = exec.Command("tmux", "rename-window", title).Run()
-	}
 }
 
 func resetITermTabColor() {
