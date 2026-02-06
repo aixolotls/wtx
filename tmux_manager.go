@@ -184,8 +184,11 @@ func setDynamicWorktreeStatus(worktreePath string) {
 		return
 	}
 	cmd := "#(" + shellQuote(bin) + " tmux-status --worktree " + shellQuote(worktreePath) + ")"
-	configureTmuxStatus(sessionID, "300", "10")
+	configureTmuxStatus(sessionID, "300", "1")
 	tmuxSetOption(sessionID, "status-left", " "+cmd+" ")
+	titleCmd := "#(" + shellQuote(bin) + " tmux-title --worktree " + shellQuote(worktreePath) + ")"
+	tmuxSetOption(sessionID, "set-titles", "on")
+	tmuxSetOption(sessionID, "set-titles-string", titleCmd)
 }
 
 func clearScreen() {
@@ -226,6 +229,13 @@ func ensureWTXSessionDefaults() {
 	}
 	// Ensure session dies when terminal client closes, so pane-backed locks do not linger.
 	tmuxSetOption(sessionID, "destroy-unattached", "on")
+	// Preserve modified key chords (for example Shift+Enter in coding agents) inside wtx-managed tmux sessions.
+	tmuxSetWindowOption(sessionID, "xterm-keys", "on")
+	tmuxSetGlobalWindowOption("xterm-keys", "on")
+	tmuxSetServerOption("extended-keys", "always")
+	tmuxSetServerOption("extended-keys-format", "csi-u")
+	tmuxAppendServerOption("terminal-features", ",*:extkeys")
+	tmuxAppendGlobalOption("terminal-features", ",*:extkeys")
 }
 
 func configureTmuxStatus(sessionID string, leftLength string, interval string) {
@@ -244,7 +254,42 @@ func tmuxSetOption(sessionID string, key string, value string) {
 	if strings.TrimSpace(sessionID) == "" {
 		return
 	}
-	_ = exec.Command("tmux", "set-option", "-t", sessionID, key, value).Run()
+	_ = exec.Command("tmux", "set-option", "-q", "-t", sessionID, key, value).Run()
+}
+
+func tmuxSetWindowOption(sessionID string, key string, value string) {
+	if strings.TrimSpace(sessionID) == "" {
+		return
+	}
+	_ = exec.Command("tmux", "set-window-option", "-q", "-t", sessionID, key, value).Run()
+}
+
+func tmuxSetServerOption(key string, value string) {
+	if strings.TrimSpace(key) == "" {
+		return
+	}
+	_ = exec.Command("tmux", "set-option", "-s", "-q", key, value).Run()
+}
+
+func tmuxSetGlobalWindowOption(key string, value string) {
+	if strings.TrimSpace(key) == "" {
+		return
+	}
+	_ = exec.Command("tmux", "set-window-option", "-g", "-q", key, value).Run()
+}
+
+func tmuxAppendServerOption(key string, value string) {
+	if strings.TrimSpace(key) == "" || strings.TrimSpace(value) == "" {
+		return
+	}
+	_ = exec.Command("tmux", "set-option", "-s", "-as", "-q", key, value).Run()
+}
+
+func tmuxAppendGlobalOption(key string, value string) {
+	if strings.TrimSpace(key) == "" || strings.TrimSpace(value) == "" {
+		return
+	}
+	_ = exec.Command("tmux", "set-option", "-g", "-as", "-q", key, value).Run()
 }
 
 func resolveStatusCommandBinary() string {

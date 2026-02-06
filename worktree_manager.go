@@ -61,8 +61,9 @@ func (m *WorktreeManager) CreateWorktree(branch string) (WorktreeInfo, error) {
 	if err != nil {
 		return WorktreeInfo{}, err
 	}
+	layoutRoot := worktreeLayoutRoot(repoRoot, gitPath)
 
-	target, err := nextWorktreePath(repoRoot)
+	target, err := nextWorktreePath(layoutRoot)
 	if err != nil {
 		return WorktreeInfo{}, err
 	}
@@ -73,7 +74,7 @@ func (m *WorktreeManager) CreateWorktree(branch string) (WorktreeInfo, error) {
 	defer lock.Release()
 
 	cmd := exec.Command(gitPath, "worktree", "add", "-b", branch, target, "HEAD")
-	cmd.Dir = repoRoot
+	cmd.Dir = layoutRoot
 	if err := cmd.Run(); err != nil {
 		return WorktreeInfo{}, err
 	}
@@ -91,8 +92,9 @@ func (m *WorktreeManager) CreateWorktreeFromBranch(branch string) (WorktreeInfo,
 	if err != nil {
 		return WorktreeInfo{}, err
 	}
+	layoutRoot := worktreeLayoutRoot(repoRoot, gitPath)
 
-	target, err := nextWorktreePath(repoRoot)
+	target, err := nextWorktreePath(layoutRoot)
 	if err != nil {
 		return WorktreeInfo{}, err
 	}
@@ -103,7 +105,7 @@ func (m *WorktreeManager) CreateWorktreeFromBranch(branch string) (WorktreeInfo,
 	defer lock.Release()
 
 	cmd := exec.Command(gitPath, "worktree", "add", target, branch)
-	cmd.Dir = repoRoot
+	cmd.Dir = layoutRoot
 	if err := cmd.Run(); err != nil {
 		return WorktreeInfo{}, err
 	}
@@ -330,4 +332,20 @@ func nextWorktreePath(repoRoot string) (string, error) {
 		}
 	}
 	return "", errors.New("no available worktree path")
+}
+
+func worktreeLayoutRoot(repoRoot string, gitPath string) string {
+	repoRoot = strings.TrimSpace(repoRoot)
+	if repoRoot == "" || strings.TrimSpace(gitPath) == "" {
+		return repoRoot
+	}
+	commonDir, err := gitOutputInDir(repoRoot, gitPath, "rev-parse", "--path-format=absolute", "--git-common-dir")
+	if err != nil {
+		return repoRoot
+	}
+	commonDir = strings.TrimSpace(commonDir)
+	if strings.EqualFold(filepath.Base(commonDir), ".git") {
+		return filepath.Dir(commonDir)
+	}
+	return repoRoot
 }

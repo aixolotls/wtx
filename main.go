@@ -23,6 +23,8 @@ func run(args []string) error {
 			return p.Start()
 		case "tmux-status":
 			return runTmuxStatus(args[2:])
+		case "tmux-title":
+			return runTmuxTitle(args[2:])
 		default:
 			return fmt.Errorf("unknown command: %s", args[1])
 		}

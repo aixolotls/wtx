@@ -22,6 +22,12 @@ func runTmuxStatus(args []string) error {
 	return nil
 }
 
+func runTmuxTitle(args []string) error {
+	worktreePath := parseWorktreeArg(args)
+	fmt.Print(buildTmuxTitle(worktreePath))
+	return nil
+}
+
 func parseWorktreeArg(args []string) string {
 	for i := 0; i < len(args); i++ {
 		if args[i] == "--worktree" && i+1 < len(args) {
@@ -44,6 +50,18 @@ func buildTmuxStatusLine(worktreePath string) string {
 	label += "  " + worktreePath
 	label += "  " + ghSummaryForBranchCached(worktreePath, branch)
 	return label
+}
+
+func buildTmuxTitle(worktreePath string) string {
+	worktreePath = strings.TrimSpace(worktreePath)
+	if worktreePath == "" {
+		return "wtx"
+	}
+	branch := currentBranchInWorktree(worktreePath)
+	if branch == "" {
+		return "wtx"
+	}
+	return "wtx - " + branch
 }
 
 func currentBranchInWorktree(worktreePath string) string {
