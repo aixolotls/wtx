@@ -9,47 +9,19 @@ import (
 	"strings"
 )
 
-type WorktreeInfo struct {
-	Path               string
-	Branch             string
-	Available          bool
-	PRURL              string
-	PRNumber           int
-	HasPR              bool
-	PRStatus           string
-	CIState            PRCIState
-	CIDone             int
-	CITotal            int
-	Approved           bool
-	UnresolvedComments int
-}
-
-type WorktreeStatus struct {
-	GitInstalled bool
-	InRepo       bool
-	RepoRoot     string
-	CWD          string
-	BaseRef      string
-	Worktrees    []WorktreeInfo
-	Orphaned     []WorktreeInfo
-	Malformed    []string
-	Err          error
-}
-
 type WorktreeManager struct {
 	cwd     string
 	lockMgr *LockManager
-	ghMgr   *GHManager
 }
 
-func NewWorktreeManager(cwd string, lockMgr *LockManager, ghMgr *GHManager) *WorktreeManager {
+func NewWorktreeManager(cwd string, lockMgr *LockManager) *WorktreeManager {
 	if strings.TrimSpace(cwd) == "" {
 		cwd, _ = os.Getwd()
 	}
-	return &WorktreeManager{cwd: cwd, lockMgr: lockMgr, ghMgr: ghMgr}
+	return &WorktreeManager{cwd: cwd, lockMgr: lockMgr}
 }
 
-func (m *WorktreeManager) Status() WorktreeStatus {
+func (m *WorktreeManager) ListForStatusBase() WorktreeStatus {
 	status := WorktreeStatus{}
 	status.CWD = m.cwd
 	gitPath, err := gitPath()
@@ -76,71 +48,7 @@ func (m *WorktreeManager) Status() WorktreeStatus {
 	status.Worktrees = worktrees
 	status.Malformed = malformed
 
-	orphaned := make([]WorktreeInfo, 0)
-	for _, wt := range worktrees {
-		exists, err := worktreePathExists(wt.Path)
-		if err != nil {
-			status.Err = err
-			return status
-		}
-		if !exists {
-			wt.Available = false
-			for i := range status.Worktrees {
-				if status.Worktrees[i].Path == wt.Path {
-					status.Worktrees[i].Available = false
-					break
-				}
-			}
-			orphaned = append(orphaned, wt)
-			continue
-		}
-		available, err := m.lockMgr.IsAvailable(repoRoot, wt.Path)
-		if err != nil {
-			status.Err = err
-			return status
-		}
-		for i := range status.Worktrees {
-			if status.Worktrees[i].Path == wt.Path {
-				status.Worktrees[i].Available = available
-				break
-			}
-		}
-	}
-	status.Orphaned = orphaned
-
 	return status
-}
-
-func (m *WorktreeManager) PRDataForStatus(status WorktreeStatus) map[string]PRData {
-	data, _ := m.prDataForStatus(status, false)
-	return data
-}
-
-func (m *WorktreeManager) PRDataForStatusForce(status WorktreeStatus) map[string]PRData {
-	data, _ := m.prDataForStatus(status, true)
-	return data
-}
-
-func (m *WorktreeManager) PRDataForStatusWithError(status WorktreeStatus, force bool) (map[string]PRData, error) {
-	return m.prDataForStatus(status, force)
-}
-
-func (m *WorktreeManager) prDataForStatus(status WorktreeStatus, force bool) (map[string]PRData, error) {
-	if !status.InRepo || strings.TrimSpace(status.RepoRoot) == "" {
-		return map[string]PRData{}, nil
-	}
-	branches := make([]string, 0, len(status.Worktrees))
-	for _, wt := range status.Worktrees {
-		b := strings.TrimSpace(wt.Branch)
-		if b == "" || b == "detached" {
-			continue
-		}
-		branches = append(branches, b)
-	}
-	if force {
-		return m.ghMgr.PRDataByBranchForce(status.RepoRoot, branches)
-	}
-	return m.ghMgr.PRDataByBranch(status.RepoRoot, branches)
 }
 
 func (m *WorktreeManager) CreateWorktree(branch string) (WorktreeInfo, error) {

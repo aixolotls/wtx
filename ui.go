@@ -14,6 +14,7 @@ import (
 
 type model struct {
 	mgr               *WorktreeManager
+	orchestrator      *WorktreeOrchestrator
 	runner            *Runner
 	status            WorktreeStatus
 	listIndex         int
@@ -56,8 +57,9 @@ func (m model) PendingWorktree() (string, string, bool, *WorktreeLock) {
 
 func newModel() model {
 	lockMgr := NewLockManager()
-	mgr := NewWorktreeManager("", lockMgr, NewGHManager())
-	m := model{mgr: mgr, runner: NewRunner(lockMgr)}
+	mgr := NewWorktreeManager("", lockMgr)
+	orchestrator := NewWorktreeOrchestrator(mgr, lockMgr, NewGHManager())
+	m := model{mgr: mgr, orchestrator: orchestrator, runner: NewRunner(lockMgr)}
 	m.branchInput = newBranchInput()
 	m.newBranchInput = newCreateBranchInput()
 	m.spinner = newSpinner()
@@ -68,7 +70,7 @@ func newModel() model {
 }
 
 func (m model) Init() tea.Cmd {
-	return tea.Batch(fetchStatusCmd(m.mgr), pollStatusTickCmd())
+	return tea.Batch(fetchStatusCmd(m.orchestrator), pollStatusTickCmd())
 }
 
 func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
@@ -100,7 +102,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		force := m.forceGHRefresh
 		m.forceGHRefresh = false
-		return m, tea.Batch(fetchGHDataCmd(m.mgr, m.status, key, force), m.ghSpinner.Tick)
+		return m, tea.Batch(fetchGHDataCmd(m.orchestrator, m.status, key, force), m.ghSpinner.Tick)
 	case ghDataMsg:
 		if strings.TrimSpace(msg.repoRoot) == "" || strings.TrimSpace(m.status.RepoRoot) == "" {
 			return m, nil
@@ -122,7 +124,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 	case pollStatusTickMsg:
 		if m.mode == modeList {
-			return m, tea.Batch(fetchStatusCmd(m.mgr), pollStatusTickCmd())
+			return m, tea.Batch(fetchStatusCmd(m.orchestrator), pollStatusTickCmd())
 		}
 		return m, pollStatusTickCmd()
 	case createWorktreeDoneMsg:
@@ -134,7 +136,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		m.errMsg = ""
-		return m, fetchStatusCmd(m.mgr)
+		return m, fetchStatusCmd(m.orchestrator)
 	case spinner.TickMsg:
 		cmds := make([]tea.Cmd, 0, 2)
 		if m.mode == modeCreating {
@@ -180,7 +182,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.deletePath = ""
 				m.deleteBranch = ""
 				m.errMsg = ""
-				return m, fetchStatusCmd(m.mgr)
+				return m, fetchStatusCmd(m.orchestrator)
 			case "n", "N", "esc":
 				m.mode = modeList
 				m.deletePath = ""
@@ -202,7 +204,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.unlockPath = ""
 				m.unlockBranch = ""
 				m.errMsg = ""
-				return m, fetchStatusCmd(m.mgr)
+				return m, fetchStatusCmd(m.orchestrator)
 			case "n", "N", "esc":
 				m.mode = modeList
 				m.unlockPath = ""
@@ -422,7 +424,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.ghDataByBranch = map[string]PRData{}
 			m.ghWarnMsg = ""
 			m.forceGHRefresh = true
-			return m, fetchStatusCmd(m.mgr)
+			return m, fetchStatusCmd(m.orchestrator)
 		case "up", "k":
 			if m.listIndex > 0 {
 				m.listIndex--
@@ -463,10 +465,6 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			if row, ok := selectedWorktree(m.status, m.listIndex); ok {
 				if isOrphanedPath(m.status, row.Path) {
 					m.errMsg = "Cannot open shell for orphaned worktree."
-					return m, nil
-				}
-				if !row.Available {
-					m.errMsg = "Worktree is currently in use."
 					return m, nil
 				}
 				m.errMsg = ""
@@ -701,9 +699,12 @@ type createWorktreeDoneMsg struct {
 	err     error
 }
 
-func fetchStatusCmd(mgr *WorktreeManager) tea.Cmd {
+func fetchStatusCmd(orchestrator *WorktreeOrchestrator) tea.Cmd {
 	return func() tea.Msg {
-		return statusMsg(mgr.Status())
+		if orchestrator == nil {
+			return statusMsg(WorktreeStatus{})
+		}
+		return statusMsg(orchestrator.Status())
 	}
 }
 
@@ -713,14 +714,16 @@ func pollStatusTickCmd() tea.Cmd {
 	})
 }
 
-func fetchGHDataCmd(mgr *WorktreeManager, status WorktreeStatus, key string, force bool) tea.Cmd {
+func fetchGHDataCmd(orchestrator *WorktreeOrchestrator, status WorktreeStatus, key string, force bool) tea.Cmd {
 	return func() tea.Msg {
 		var byBranch map[string]PRData
 		var err error
-		if force {
-			byBranch, err = mgr.PRDataForStatusWithError(status, true)
+		if orchestrator == nil {
+			byBranch = map[string]PRData{}
+		} else if force {
+			byBranch, err = orchestrator.PRDataForStatusWithError(status, true)
 		} else {
-			byBranch, err = mgr.PRDataForStatusWithError(status, false)
+			byBranch, err = orchestrator.PRDataForStatusWithError(status, false)
 		}
 		return ghDataMsg{
 			repoRoot: status.RepoRoot,
