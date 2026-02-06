@@ -689,7 +689,7 @@ func (m model) View() string {
 			prHint = ", p to open PR"
 		}
 		if !wt.Available && !isOrphanedPath(m.status, wt.Path) {
-			help = "Press u to unlock, d to delete" + prHint + ", r to refresh, q to quit."
+			help = "Press s for shell, u to unlock, d to delete" + prHint + ", r to refresh, q to quit."
 		} else {
 			help = "Press enter for actions, s for shell, d to delete" + prHint + ", r to refresh, q to quit."
 		}
