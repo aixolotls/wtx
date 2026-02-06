@@ -11,6 +11,7 @@ import (
 	"github.com/charmbracelet/bubbles/textinput"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
+	uiview "github.com/mrbonezy/wtx/ui"
 )
 
 type model struct {
@@ -533,6 +534,10 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				return m, nil
 			}
 			if row, ok := selectedWorktree(m.status, m.listIndex); ok {
+				if err := m.mgr.CanDeleteWorktree(row.Path); err != nil {
+					m.errMsg = err.Error()
+					return m, nil
+				}
 				m.mode = modeDelete
 				m.deletePath = row.Path
 				m.deleteBranch = row.Branch
@@ -579,7 +584,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					return m, nil
 				}
 				if row.Available {
-					m.errMsg = "Worktree is not locked."
+					m.errMsg = "Worktree is not in use."
 					return m, nil
 				}
 				m.mode = modeUnlock
@@ -637,9 +642,9 @@ func (m model) View() string {
 			title = "New worktree actions:"
 		}
 		b.WriteString(title + "\n")
-			if m.baseRefRefreshing {
-				b.WriteString("  " + secondaryStyle.Render(m.spinner.View()+" Refreshing base branch...") + "\n")
-			}
+		if m.baseRefRefreshing {
+			b.WriteString("  " + secondaryStyle.Render(m.spinner.View()+" Refreshing base branch...") + "\n")
+		}
 		for i, item := range currentActionItems(m.actionBranch, m.status.BaseRef, m.actionCreate) {
 			line := "  " + actionNormalStyle.Render(item)
 			if i == m.actionIndex {
@@ -774,17 +779,17 @@ func (m model) View() string {
 		help = "Creating worktree..."
 	} else if isCreateRow(m.listIndex, m.status) {
 		help = "Press enter for actions, ←/→ to switch views, r to refresh, q to quit."
-		} else if wt, ok := selectedWorktree(m.status, m.listIndex); ok {
-			prHint := ""
-			if strings.TrimSpace(wt.PRURL) != "" {
-				prHint = ", p to open PR"
-			}
-			if !wt.Available && !isOrphanedPath(m.status, wt.Path) {
-				help = "Press u to unlock, d to delete" + prHint + ", ←/→ to switch views, r to refresh, q to quit."
-			} else {
-				help = "Press enter for actions, s for shell, d to delete" + prHint + ", ←/→ to switch views, r to refresh, q to quit."
-			}
+	} else if wt, ok := selectedWorktree(m.status, m.listIndex); ok {
+		prHint := ""
+		if strings.TrimSpace(wt.PRURL) != "" {
+			prHint = ", p to open PR"
 		}
+		if !wt.Available && !isOrphanedPath(m.status, wt.Path) {
+			help = "Press u to unlock, d to delete" + prHint + ", ←/→ to switch views, r to refresh, q to quit."
+		} else {
+			help = "Press enter for actions, s for shell, d to delete" + prHint + ", ←/→ to switch views, r to refresh, q to quit."
+		}
+	}
 	b.WriteString(help + "\n")
 	return b.String()
 }
@@ -807,112 +812,21 @@ func renderViewHeader(page int) string {
 }
 
 func renderPRSelector(prs []PRListData, cursor int, loading bool, loadingGlyph string) string {
-	const (
-		numberWidth   = 8
-		branchWidth   = 24
-		titleWidth    = 48
-		ciWidth       = 12
-		approvalWidth = 14
-		statusWidth   = 10
-	)
-	var b strings.Builder
-	header := formatOpenPRLine("PR", "Branch", "Title", "CI status", "Approval", "PR status", numberWidth, branchWidth, titleWidth, ciWidth, approvalWidth, statusWidth)
-	b.WriteString(selectorHeaderStyle.Render("  " + header))
-	b.WriteString("\n")
-	if len(prs) == 0 {
-		b.WriteString("  ")
-		b.WriteString(selectorDisabledStyle.Render("No PRs."))
-		if loading {
-			b.WriteString("\n  ")
-			b.WriteString(secondaryStyle.Render(loadingGlyph + " Loading PRs..."))
-		}
-		return b.String()
-	}
-	for i, pr := range prs {
-		rowStyle := selectorNormalStyle
-		rowSelectedStyle := selectorSelectedStyle
-		if isInactivePRStatus(pr.Status) {
-			rowStyle = selectorDisabledStyle
-			rowSelectedStyle = selectorDisabledSelectedStyle
-		}
-		line := formatOpenPRLine(
-			fmt.Sprintf("#%d", pr.Number),
+	rows := make([]uiview.PRRow, 0, len(prs))
+	for _, pr := range prs {
+		rows = append(rows, uiview.BuildPRRow(
+			pr.Number,
 			pr.Branch,
 			pr.Title,
-			formatPRListCI(pr),
-			formatPRListApproval(pr),
-			formatPRListStatus(pr),
-			numberWidth,
-			branchWidth,
-			titleWidth,
-			ciWidth,
-			approvalWidth,
-			statusWidth,
-		)
-		if i == cursor {
-			b.WriteString("  " + rowSelectedStyle.Render(line))
-		} else {
-			b.WriteString("  " + rowStyle.Render(line))
-		}
-		b.WriteString("\n")
+			pr.CICompleted,
+			pr.CITotal,
+			string(pr.CIState),
+			pr.Approved,
+			pr.ReviewDecision,
+			pr.Status,
+		))
 	}
-	if loading {
-		b.WriteString("  ")
-		b.WriteString(secondaryStyle.Render(loadingGlyph + " Loading PRs..."))
-	}
-	return b.String()
-}
-
-func formatOpenPRLine(number string, branch string, title string, ci string, approval string, status string, numberWidth int, branchWidth int, titleWidth int, ciWidth int, approvalWidth int, statusWidth int) string {
-	return padOrTrim(number, numberWidth) + " " +
-		padOrTrim(branch, branchWidth) + " " +
-		padOrTrim(title, titleWidth) + " " +
-		padOrTrim(ci, ciWidth) + " " +
-		padOrTrim(approval, approvalWidth) + " " +
-		padOrTrim(status, statusWidth)
-}
-
-func formatPRListCI(pr PRListData) string {
-	if pr.CITotal == 0 {
-		return "-"
-	}
-	switch pr.CIState {
-	case PRCISuccess:
-		return fmt.Sprintf("✓ %d/%d", pr.CICompleted, pr.CITotal)
-	case PRCIFail:
-		return fmt.Sprintf("✗ %d/%d", pr.CICompleted, pr.CITotal)
-	case PRCIInProgress:
-		return fmt.Sprintf("… %d/%d", pr.CICompleted, pr.CITotal)
-	default:
-		return "-"
-	}
-}
-
-func formatPRListApproval(pr PRListData) string {
-	if pr.Approved {
-		return "approved"
-	}
-	switch strings.ToLower(strings.TrimSpace(pr.ReviewDecision)) {
-	case "changes_requested":
-		return "changes_requested"
-	case "review_required":
-		return "review_required"
-	default:
-		return "-"
-	}
-}
-
-func formatPRListStatus(pr PRListData) string {
-	status := strings.TrimSpace(strings.ToLower(pr.Status))
-	if status == "" {
-		return "-"
-	}
-	return status
-}
-
-func isInactivePRStatus(status string) bool {
-	s := strings.TrimSpace(strings.ToLower(status))
-	return s == "closed" || s == "merged"
+	return uiview.RenderPRSelector(rows, cursor, loading, loadingGlyph, viewStyles())
 }
 
 func selectedPR(prs []PRListData, index int) (PRListData, bool) {
@@ -1027,88 +941,34 @@ func renderSelector(status WorktreeStatus, cursor int, pendingByBranch map[strin
 	if !status.InRepo {
 		return ""
 	}
-	const (
-		branchWidth   = 40
-		prWidth       = 12
-		ciWidth       = 12
-		approvedWidth = 12
-		prStateWidth  = 10
-	)
-	var b strings.Builder
-	header := formatSelectorLine("Branch", "PR", "CI", "Approved", "PR Status", branchWidth, prWidth, ciWidth, approvedWidth, prStateWidth)
-	b.WriteString(selectorHeaderStyle.Render("  " + header))
-	b.WriteString("\n")
+	rows := make([]uiview.WorktreeRow, 0, len(status.Worktrees)+1)
 	orphaned := make(map[string]bool, len(status.Orphaned))
 	for _, wt := range status.Orphaned {
 		orphaned[wt.Path] = true
 	}
 	worktrees := worktreesForDisplay(status)
-	for i, wt := range worktrees {
+	for _, wt := range worktrees {
 		label := wt.Branch
-		rowStyle := selectorNormalStyle
-		rowSelectedStyle := selectorSelectedStyle
+		disabled := false
 		if orphaned[wt.Path] {
 			label = fmt.Sprintf("%s (orphaned)", wt.Branch)
-			rowStyle = selectorDisabledStyle
-			rowSelectedStyle = selectorDisabledSelectedStyle
+			disabled = true
 		} else if !wt.Available {
-			label = wt.Branch + " (locked)"
-			rowStyle = selectorDisabledStyle
-			rowSelectedStyle = selectorDisabledSelectedStyle
+			label = wt.Branch + " (in use)"
+			disabled = true
 		}
 		pending := pendingByBranch[strings.TrimSpace(wt.Branch)]
-		line := formatSelectorLine(
-			label,
-			formatPRLabel(wt, pending, loadingGlyph),
-			formatCILabel(wt, pending, loadingGlyph),
-			formatReviewLabel(wt, pending, loadingGlyph),
-			formatPRStatusLabel(wt, pending, loadingGlyph),
-			branchWidth,
-			prWidth,
-			ciWidth,
-			approvedWidth,
-			prStateWidth,
-		)
-		if i == cursor {
-			b.WriteString("  " + rowSelectedStyle.Render(line))
-		} else {
-			b.WriteString("  " + rowStyle.Render(line))
-		}
-		b.WriteString("\n")
+		rows = append(rows, uiview.WorktreeRow{
+			BranchLabel:   label,
+			PRLabel:       formatPRLabel(wt, pending, loadingGlyph),
+			CILabel:       formatCILabel(wt, pending, loadingGlyph),
+			ReviewLabel:   formatReviewLabel(wt, pending, loadingGlyph),
+			PRStatusLabel: formatPRStatusLabel(wt, pending, loadingGlyph),
+			Disabled:      disabled,
+		})
 	}
-	createIdx := len(worktrees)
-	createLine := formatSelectorLine("+ New worktree", "", "", "", "", branchWidth, prWidth, ciWidth, approvedWidth, prStateWidth)
-	if createIdx == cursor {
-		b.WriteString("  " + selectorSelectedStyle.Render(createLine))
-	} else {
-		b.WriteString("  " + selectorNormalStyle.Render(createLine))
-	}
-	return b.String()
-}
-
-func formatSelectorLine(branch string, pr string, ci string, approved string, prState string, branchWidth int, prWidth int, ciWidth int, approvedWidth int, prStateWidth int) string {
-	return padOrTrim(branch, branchWidth) + " " +
-		padOrTrim(pr, prWidth) + " " +
-		padOrTrim(ci, ciWidth) + " " +
-		padOrTrim(approved, approvedWidth) + " " +
-		padOrTrim(prState, prStateWidth)
-}
-
-func padOrTrim(s string, width int) string {
-	if width <= 0 {
-		return ""
-	}
-	r := []rune(s)
-	if len(r) > width {
-		if width <= 3 {
-			return string(r[:width])
-		}
-		return string(r[:width-3]) + "..."
-	}
-	if len(r) < width {
-		return s + strings.Repeat(" ", width-len(r))
-	}
-	return s
+	rows = append(rows, uiview.WorktreeRow{BranchLabel: "+ New worktree"})
+	return uiview.RenderWorktreeSelector(rows, cursor, viewStyles())
 }
 
 var (
@@ -1139,6 +999,17 @@ var (
 	inputStyle          = lipgloss.NewStyle().
 				Padding(0, 1)
 )
+
+func viewStyles() uiview.Styles {
+	return uiview.Styles{
+		Header:           func(s string) string { return selectorHeaderStyle.Render(s) },
+		Normal:           func(s string) string { return selectorNormalStyle.Render(s) },
+		Selected:         func(s string) string { return selectorSelectedStyle.Render(s) },
+		Disabled:         func(s string) string { return selectorDisabledStyle.Render(s) },
+		DisabledSelected: func(s string) string { return selectorDisabledSelectedStyle.Render(s) },
+		Secondary:        func(s string) string { return secondaryStyle.Render(s) },
+	}
+}
 
 func max(a int, b int) int {
 	if a > b {

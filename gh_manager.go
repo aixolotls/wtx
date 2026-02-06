@@ -162,7 +162,15 @@ func (m *GHManager) fetchRepoPRData(repoRoot string) (map[string]PRData, []PRLis
 	if err != nil {
 		return nil, nil, err
 	}
-	cmd := exec.Command(ghPath, "pr", "list", "--state", "all", "--json", "number,url,headRefName,title,isDraft,state,updatedAt,mergedAt,reviewDecision,statusCheckRollup", "--limit", "200")
+	cmd := exec.Command(
+		ghPath,
+		"pr",
+		"list",
+		"--state", "all",
+		"--author", "@me",
+		"--json", "number,url,headRefName,title,isDraft,state,updatedAt,mergedAt,reviewDecision,statusCheckRollup",
+		"--limit", "200",
+	)
 	cmd.Dir = repoRoot
 	out, err := cmd.CombinedOutput()
 	if err != nil {
