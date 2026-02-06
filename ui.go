@@ -14,7 +14,7 @@ import (
 
 type model struct {
 	mgr               *WorktreeManager
-	ctrl              *Controller
+	runner            *Runner
 	status            WorktreeStatus
 	listIndex         int
 	ready             bool
@@ -56,7 +56,7 @@ func (m model) PendingWorktree() (string, string, bool, *WorktreeLock) {
 
 func newModel() model {
 	mgr := NewWorktreeManager("", NewLockManager(), NewGHManager())
-	m := model{mgr: mgr, ctrl: NewController()}
+	m := model{mgr: mgr, runner: NewRunner()}
 	m.branchInput = newBranchInput()
 	m.newBranchInput = newCreateBranchInput()
 	m.spinner = newSpinner()
@@ -306,11 +306,6 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					if row, ok := selectedWorktree(m.status, m.listIndex); ok {
 						m.errMsg = ""
 						m.warnMsg = ""
-						if ok, warn := m.ctrl.AgentAvailable(); !ok {
-							m.warnMsg = warn
-							m.mode = modeList
-							return m, nil
-						}
 						lock, err := m.mgr.AcquireWorktreeLock(row.Path)
 						if err != nil {
 							m.errMsg = err.Error()
@@ -327,11 +322,6 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					if row, ok := selectedWorktree(m.status, m.listIndex); ok {
 						m.errMsg = ""
 						m.warnMsg = ""
-						if ok, warn := m.ctrl.AgentAvailable(); !ok {
-							m.warnMsg = warn
-							m.mode = modeList
-							return m, nil
-						}
 						lock, err := m.mgr.AcquireWorktreeLock(row.Path)
 						if err != nil {
 							m.errMsg = err.Error()
@@ -411,14 +401,6 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				}
 				m.errMsg = ""
 				m.warnMsg = ""
-				if ok, warn := m.ctrl.AgentAvailable(); !ok {
-					m.warnMsg = warn
-					m.mode = modeList
-					m.branchInput.Blur()
-					m.branchSuggestions = nil
-					m.branchIndex = 0
-					return m, nil
-				}
 				m.pendingPath = row.Path
 				m.pendingBranch = branch
 				m.pendingOpenShell = false
@@ -481,6 +463,29 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.errMsg = ""
 				return m, nil
 			}
+		case "s":
+			if row, ok := selectedWorktree(m.status, m.listIndex); ok {
+				if isOrphanedPath(m.status, row.Path) {
+					m.errMsg = "Cannot open shell for orphaned worktree."
+					return m, nil
+				}
+				if !row.Available {
+					m.errMsg = "Worktree is currently in use."
+					return m, nil
+				}
+				lock, err := m.mgr.AcquireWorktreeLock(row.Path)
+				if err != nil {
+					m.errMsg = err.Error()
+					return m, nil
+				}
+				m.errMsg = ""
+				m.warnMsg = ""
+				m.pendingPath = row.Path
+				m.pendingBranch = row.Branch
+				m.pendingOpenShell = true
+				m.pendingLock = lock
+				return m, tea.Quit
+			}
 		case "d":
 			if row, ok := selectedWorktree(m.status, m.listIndex); ok {
 				m.mode = modeDelete
@@ -495,7 +500,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					m.errMsg = "No PR URL for selected worktree."
 					return m, nil
 				}
-				if err := m.ctrl.OpenURL(row.PRURL); err != nil {
+				if err := m.runner.OpenURL(row.PRURL); err != nil {
 					m.errMsg = err.Error()
 					return m, nil
 				}
@@ -685,7 +690,7 @@ func (m model) View() string {
 		if !wt.Available && !isOrphanedPath(m.status, wt.Path) {
 			help = "Press u to unlock, d to delete" + prHint + ", r to refresh, q to quit."
 		} else {
-			help = "Press enter for actions, d to delete" + prHint + ", r to refresh, q to quit."
+			help = "Press enter for actions, s for shell, d to delete" + prHint + ", r to refresh, q to quit."
 		}
 	}
 	b.WriteString(help + "\n")

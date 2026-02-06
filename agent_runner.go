@@ -2,16 +2,19 @@ package main
 
 import (
 	"errors"
+	"fmt"
+	"os"
 	"os/exec"
+	"runtime"
 	"strings"
 )
 
-type AgentRunner struct {
+type Runner struct {
 	lockMgr *LockManager
 }
 
-func NewAgentRunner() *AgentRunner {
-	return &AgentRunner{lockMgr: NewLockManager()}
+func NewRunner() *Runner {
+	return &Runner{lockMgr: NewLockManager()}
 }
 
 type AgentRunResult struct {
@@ -19,14 +22,7 @@ type AgentRunResult struct {
 	Warning string
 }
 
-func (r *AgentRunner) Available() (bool, string) {
-	if !tmuxAvailable() {
-		return false, "tmux not available; cannot split pane for agent"
-	}
-	return true, ""
-}
-
-func (r *AgentRunner) RunInWorktree(worktreePath string, branch string, lock *WorktreeLock) (AgentRunResult, error) {
+func (r *Runner) RunInWorktree(worktreePath string, branch string, lock *WorktreeLock) (AgentRunResult, error) {
 	worktreePath = strings.TrimSpace(worktreePath)
 	if worktreePath == "" {
 		return AgentRunResult{}, errors.New("worktree path required")
@@ -43,43 +39,37 @@ func (r *AgentRunner) RunInWorktree(worktreePath string, branch string, lock *Wo
 		agentCmd = defaultAgentCommand
 	}
 
-	if ok, warn := r.Available(); !ok {
-		return AgentRunResult{Started: false, Warning: warn}, nil
-	}
-
-	paneID, _ := currentPaneID()
-	newPaneID, err := splitAgentPane(worktreePath, agentCmd)
-	if err != nil {
-		return AgentRunResult{}, err
-	}
-	if err := r.lockWorktreeForPane(worktreePath, newPaneID, lock); err != nil {
-		return AgentRunResult{}, err
-	}
-	clearScreen()
-	setDynamicWorktreeStatus(worktreePath)
-	setITermWTXBranchTab(branch)
-	if paneID != "" {
-		_ = exec.Command("tmux", "resize-pane", "-t", paneID, "-y", "1").Run()
-	}
-	if newPaneID != "" {
-		_ = exec.Command("tmux", "select-pane", "-t", newPaneID).Run()
-	}
-	return AgentRunResult{Started: true}, nil
+	return r.runInWorktree(worktreePath, branch, lock, false, agentCmd)
 }
 
-func (r *AgentRunner) RunShellInWorktree(worktreePath string, branch string, lock *WorktreeLock) (AgentRunResult, error) {
+func (r *Runner) RunShellInWorktree(worktreePath string, branch string, lock *WorktreeLock) (AgentRunResult, error) {
+	return r.runInWorktree(worktreePath, branch, lock, true, "")
+}
+
+func (r *Runner) runInWorktree(worktreePath string, branch string, lock *WorktreeLock, openShell bool, agentCmd string) (AgentRunResult, error) {
 	worktreePath = strings.TrimSpace(worktreePath)
 	if worktreePath == "" {
 		return AgentRunResult{}, errors.New("worktree path required")
 	}
 	branch = strings.TrimSpace(branch)
 
-	if ok, warn := r.Available(); !ok {
-		return AgentRunResult{Started: false, Warning: warn}, nil
+	if tmuxAvailable() {
+		return r.runInTmux(worktreePath, branch, lock, openShell, agentCmd)
 	}
+	return r.runWithoutTmux(worktreePath, branch, lock, openShell, agentCmd)
+}
 
+func (r *Runner) runInTmux(worktreePath string, branch string, lock *WorktreeLock, openShell bool, agentCmd string) (AgentRunResult, error) {
 	paneID, _ := currentPaneID()
-	newPaneID, err := splitShellPane(worktreePath)
+	var (
+		newPaneID string
+		err       error
+	)
+	if openShell {
+		newPaneID, err = splitShellPane(worktreePath)
+	} else {
+		newPaneID, err = splitAgentPane(worktreePath, agentCmd)
+	}
 	if err != nil {
 		return AgentRunResult{}, err
 	}
@@ -98,7 +88,48 @@ func (r *AgentRunner) RunShellInWorktree(worktreePath string, branch string, loc
 	return AgentRunResult{Started: true}, nil
 }
 
-func (r *AgentRunner) lockWorktreeForPane(worktreePath string, paneID string, existingLock *WorktreeLock) error {
+func (r *Runner) runWithoutTmux(worktreePath string, branch string, lock *WorktreeLock, openShell bool, agentCmd string) (AgentRunResult, error) {
+	cmd := shellCommand(worktreePath, openShell, agentCmd)
+	if err := cmd.Start(); err != nil {
+		return AgentRunResult{}, err
+	}
+	boundLock, err := r.lockWorktreeForPID(worktreePath, cmd.Process.Pid, lock)
+	if err != nil {
+		_ = cmd.Process.Kill()
+		_, _ = cmd.Process.Wait()
+		return AgentRunResult{}, err
+	}
+	if boundLock != nil {
+		defer boundLock.Release()
+	}
+
+	clearScreen()
+	setDynamicWorktreeStatus(worktreePath)
+	setITermWTXBranchTab(branch)
+
+	runErr := cmd.Wait()
+	result := AgentRunResult{Started: true, Warning: "tmux unavailable; running in current terminal"}
+	if runErr != nil {
+		return result, fmt.Errorf("worktree command failed: %w", runErr)
+	}
+	return result, nil
+}
+
+func shellCommand(worktreePath string, openShell bool, agentCmd string) *exec.Cmd {
+	var cmd *exec.Cmd
+	if openShell {
+		cmd = exec.Command("/bin/sh", "-lc", "exec \"${SHELL:-/bin/sh}\" -l")
+	} else {
+		cmd = exec.Command("/bin/sh", "-lc", agentCmd)
+	}
+	cmd.Dir = worktreePath
+	cmd.Stdin = os.Stdin
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
+	return cmd
+}
+
+func (r *Runner) lockWorktreeForPane(worktreePath string, paneID string, existingLock *WorktreeLock) error {
 	if strings.TrimSpace(paneID) == "" {
 		return nil
 	}
@@ -106,17 +137,32 @@ func (r *AgentRunner) lockWorktreeForPane(worktreePath string, paneID string, ex
 	if err != nil {
 		return err
 	}
-	if existingLock != nil {
-		return existingLock.RebindPID(pid)
-	}
-	gitPath, err := exec.LookPath("git")
-	if err != nil {
-		return err
-	}
-	repoRoot, err := gitOutputInDir(worktreePath, gitPath, "rev-parse", "--show-toplevel")
-	if err != nil {
-		return err
-	}
-	_, err = r.lockMgr.AcquireForPID(repoRoot, worktreePath, pid)
+	_, err = r.lockWorktreeForPID(worktreePath, pid, existingLock)
 	return err
+}
+
+func (r *Runner) lockWorktreeForPID(worktreePath string, pid int, existingLock *WorktreeLock) (*WorktreeLock, error) {
+	if existingLock != nil {
+		return existingLock, existingLock.RebindPID(pid)
+	}
+	_, repoRoot, err := requireGitContext(worktreePath)
+	if err != nil {
+		return nil, err
+	}
+	return r.lockMgr.AcquireForPID(repoRoot, worktreePath, pid)
+}
+
+func (r *Runner) OpenURL(url string) error {
+	url = strings.TrimSpace(url)
+	if url == "" {
+		return errors.New("no PR URL for selected worktree")
+	}
+	var cmd *exec.Cmd
+	switch runtime.GOOS {
+	case "darwin":
+		cmd = exec.Command("open", url)
+	default:
+		cmd = exec.Command("xdg-open", url)
+	}
+	return cmd.Start()
 }

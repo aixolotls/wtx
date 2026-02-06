@@ -58,15 +58,15 @@ func NewWorktreeManager(cwd string, lockMgr *LockManager, ghMgr *GHManager) *Wor
 func (m *WorktreeManager) Status() WorktreeStatus {
 	status := WorktreeStatus{}
 	status.CWD = m.cwd
-	gitPath, err := exec.LookPath("git")
+	gitPath, err := gitPath()
 	if err != nil {
 		status.GitInstalled = false
 		return status
 	}
 	status.GitInstalled = true
 
-	repoRoot, err := gitOutputInDir(m.cwd, gitPath, "rev-parse", "--show-toplevel")
-	if err != nil || strings.TrimSpace(repoRoot) == "" {
+	repoRoot, err := repoRootForDir(m.cwd, gitPath)
+	if err != nil {
 		status.InRepo = false
 		return status
 	}
@@ -155,14 +155,9 @@ func (m *WorktreeManager) CreateWorktree(branch string) (WorktreeInfo, error) {
 		return WorktreeInfo{}, errors.New("branch name required")
 	}
 
-	gitPath, err := exec.LookPath("git")
+	gitPath, repoRoot, err := requireGitContext(m.cwd)
 	if err != nil {
-		return WorktreeInfo{}, errors.New("git not installed")
-	}
-
-	repoRoot, err := gitOutputInDir(m.cwd, gitPath, "rev-parse", "--show-toplevel")
-	if err != nil || strings.TrimSpace(repoRoot) == "" {
-		return WorktreeInfo{}, errors.New("not in a git repository")
+		return WorktreeInfo{}, err
 	}
 
 	target, err := nextWorktreePath(repoRoot)
@@ -190,14 +185,9 @@ func (m *WorktreeManager) CreateWorktreeFromBranch(branch string) (WorktreeInfo,
 		return WorktreeInfo{}, errors.New("branch name required")
 	}
 
-	gitPath, err := exec.LookPath("git")
+	gitPath, repoRoot, err := requireGitContext(m.cwd)
 	if err != nil {
-		return WorktreeInfo{}, errors.New("git not installed")
-	}
-
-	repoRoot, err := gitOutputInDir(m.cwd, gitPath, "rev-parse", "--show-toplevel")
-	if err != nil || strings.TrimSpace(repoRoot) == "" {
-		return WorktreeInfo{}, errors.New("not in a git repository")
+		return WorktreeInfo{}, err
 	}
 
 	target, err := nextWorktreePath(repoRoot)
@@ -220,14 +210,9 @@ func (m *WorktreeManager) CreateWorktreeFromBranch(branch string) (WorktreeInfo,
 }
 
 func (m *WorktreeManager) ListLocalBranchesByRecentUse() ([]string, error) {
-	gitPath, err := exec.LookPath("git")
+	gitPath, repoRoot, err := requireGitContext(m.cwd)
 	if err != nil {
-		return nil, errors.New("git not installed")
-	}
-
-	repoRoot, err := gitOutputInDir(m.cwd, gitPath, "rev-parse", "--show-toplevel")
-	if err != nil || strings.TrimSpace(repoRoot) == "" {
-		return nil, errors.New("not in a git repository")
+		return nil, err
 	}
 
 	cmd := exec.Command(gitPath, "for-each-ref", "--sort=-committerdate", "--format=%(refname:short)", "refs/heads")
@@ -255,14 +240,9 @@ func (m *WorktreeManager) DeleteWorktree(path string, force bool) error {
 		return errors.New("worktree path required")
 	}
 
-	gitPath, err := exec.LookPath("git")
+	gitPath, repoRoot, err := requireGitContext(m.cwd)
 	if err != nil {
-		return errors.New("git not installed")
-	}
-
-	repoRoot, err := gitOutputInDir(m.cwd, gitPath, "rev-parse", "--show-toplevel")
-	if err != nil || strings.TrimSpace(repoRoot) == "" {
-		return errors.New("not in a git repository")
+		return err
 	}
 
 	args := []string{"worktree", "remove"}
@@ -293,9 +273,9 @@ func (m *WorktreeManager) CheckoutExistingBranch(worktreePath string, branch str
 	if branch == "" {
 		return errors.New("branch name required")
 	}
-	gitPath, err := exec.LookPath("git")
+	gitPath, err := requireGitPath()
 	if err != nil {
-		return errors.New("git not installed")
+		return err
 	}
 	cmd := exec.Command(gitPath, "checkout", branch)
 	cmd.Dir = worktreePath
@@ -307,13 +287,9 @@ func (m *WorktreeManager) AcquireWorktreeLock(worktreePath string) (*WorktreeLoc
 	if worktreePath == "" {
 		return nil, errors.New("worktree path required")
 	}
-	gitPath, err := exec.LookPath("git")
+	_, repoRoot, err := requireGitContext(m.cwd)
 	if err != nil {
-		return nil, errors.New("git not installed")
-	}
-	repoRoot, err := gitOutputInDir(m.cwd, gitPath, "rev-parse", "--show-toplevel")
-	if err != nil || strings.TrimSpace(repoRoot) == "" {
-		return nil, errors.New("not in a git repository")
+		return nil, err
 	}
 	return m.lockMgr.Acquire(repoRoot, worktreePath)
 }
@@ -323,13 +299,9 @@ func (m *WorktreeManager) UnlockWorktree(worktreePath string) error {
 	if worktreePath == "" {
 		return errors.New("worktree path required")
 	}
-	gitPath, err := exec.LookPath("git")
+	_, repoRoot, err := requireGitContext(m.cwd)
 	if err != nil {
-		return errors.New("git not installed")
-	}
-	repoRoot, err := gitOutputInDir(m.cwd, gitPath, "rev-parse", "--show-toplevel")
-	if err != nil || strings.TrimSpace(repoRoot) == "" {
-		return errors.New("not in a git repository")
+		return err
 	}
 	return m.lockMgr.ForceUnlock(repoRoot, worktreePath)
 }
@@ -445,7 +417,7 @@ func nextWorktreePath(repoRoot string) (string, error) {
 	base := filepath.Base(repoRoot)
 	parent := filepath.Dir(repoRoot)
 	worktreeRoot := filepath.Join(parent, base+".wt")
-	for i := 1; i < 10000; i++ {
+	for i := 1; i < 100; i++ {
 		candidate := filepath.Join(worktreeRoot, fmt.Sprintf("wt.%d", i))
 		_, statErr := os.Stat(candidate)
 		if errors.Is(statErr, os.ErrNotExist) {

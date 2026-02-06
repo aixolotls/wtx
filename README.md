@@ -13,7 +13,7 @@ Yes, `go install github.com/mrbonezy/wtx@latest` is still the correct install co
 ## Prerequisites
 
 - `git` (required)
-- `tmux` (required for the "use worktree" / "open shell here" flow)
+- `tmux` (optional; used for pane splitting and status line integration)
 - `gh` (optional, for PR/CI/review data)
 - iTerm2 (optional, for tab title/color integration)
 
@@ -32,6 +32,7 @@ wtx
 Inside the picker:
 
 - `enter`: actions for selected free worktree
+- `s`: open shell in selected free worktree
 - `d`: delete selected worktree (with confirmation)
 - `u`: unlock selected locked worktree (with confirmation)
 - `r`: manual refresh (bypasses GH cache)

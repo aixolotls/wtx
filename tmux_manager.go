@@ -167,13 +167,8 @@ func setStatusBanner(banner string) {
 	if err != nil || strings.TrimSpace(sessionID) == "" {
 		return
 	}
-	_ = exec.Command("tmux", "set-option", "-t", sessionID, "status", "1").Run()
-	_ = exec.Command("tmux", "set-option", "-t", sessionID, "status-position", "bottom").Run()
-	_ = exec.Command("tmux", "set-option", "-t", sessionID, "status-justify", "left").Run()
-	_ = exec.Command("tmux", "set-option", "-t", sessionID, "status-style", "fg=#FFF7DB,bg=#7D56F4").Run()
-	_ = exec.Command("tmux", "set-option", "-t", sessionID, "status-left-length", "200").Run()
-	_ = exec.Command("tmux", "set-option", "-t", sessionID, "status-right", "").Run()
-	_ = exec.Command("tmux", "set-option", "-t", sessionID, "status-left", " "+banner+" ").Run()
+	configureTmuxStatus(sessionID, "200", "")
+	tmuxSetOption(sessionID, "status-left", " "+banner+" ")
 }
 
 func setDynamicWorktreeStatus(worktreePath string) {
@@ -190,14 +185,8 @@ func setDynamicWorktreeStatus(worktreePath string) {
 		return
 	}
 	cmd := "#(" + shellQuote(bin) + " tmux-status --worktree " + shellQuote(worktreePath) + ")"
-	_ = exec.Command("tmux", "set-option", "-t", sessionID, "status", "1").Run()
-	_ = exec.Command("tmux", "set-option", "-t", sessionID, "status-position", "bottom").Run()
-	_ = exec.Command("tmux", "set-option", "-t", sessionID, "status-justify", "left").Run()
-	_ = exec.Command("tmux", "set-option", "-t", sessionID, "status-style", "fg=#FFF7DB,bg=#7D56F4").Run()
-	_ = exec.Command("tmux", "set-option", "-t", sessionID, "status-left-length", "300").Run()
-	_ = exec.Command("tmux", "set-option", "-t", sessionID, "status-right", "").Run()
-	_ = exec.Command("tmux", "set-option", "-t", sessionID, "status-interval", "10").Run()
-	_ = exec.Command("tmux", "set-option", "-t", sessionID, "status-left", " "+cmd+" ").Run()
+	configureTmuxStatus(sessionID, "300", "10")
+	tmuxSetOption(sessionID, "status-left", " "+cmd+" ")
 }
 
 func clearScreen() {
@@ -237,7 +226,26 @@ func ensureWTXSessionDefaults() {
 		return
 	}
 	// Ensure session dies when terminal client closes, so pane-backed locks do not linger.
-	_ = exec.Command("tmux", "set-option", "-t", sessionID, "destroy-unattached", "on").Run()
+	tmuxSetOption(sessionID, "destroy-unattached", "on")
+}
+
+func configureTmuxStatus(sessionID string, leftLength string, interval string) {
+	tmuxSetOption(sessionID, "status", "1")
+	tmuxSetOption(sessionID, "status-position", "bottom")
+	tmuxSetOption(sessionID, "status-justify", "left")
+	tmuxSetOption(sessionID, "status-style", "fg=#FFF7DB,bg=#7D56F4")
+	tmuxSetOption(sessionID, "status-left-length", leftLength)
+	tmuxSetOption(sessionID, "status-right", "")
+	if strings.TrimSpace(interval) != "" {
+		tmuxSetOption(sessionID, "status-interval", interval)
+	}
+}
+
+func tmuxSetOption(sessionID string, key string, value string) {
+	if strings.TrimSpace(sessionID) == "" {
+		return
+	}
+	_ = exec.Command("tmux", "set-option", "-t", sessionID, key, value).Run()
 }
 
 func resolveStatusCommandBinary() string {

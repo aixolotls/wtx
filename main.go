@@ -63,16 +63,16 @@ func run(args []string) error {
 		path, branch, openShell, lock := m.PendingWorktree()
 		if strings.TrimSpace(path) != "" {
 			shouldResetTabColor = false
-			ctrl := NewController()
+			runner := NewRunner()
 			if openShell {
-				if _, err := ctrl.OpenShellInWorktree(path, branch, lock); err != nil {
+				if _, err := runner.RunShellInWorktree(path, branch, lock); err != nil {
 					if lock != nil {
 						lock.Release()
 					}
 					return err
 				}
 			} else {
-				if _, err := ctrl.UseWorktree(path, branch, lock); err != nil {
+				if _, err := runner.RunInWorktree(path, branch, lock); err != nil {
 					if lock != nil {
 						lock.Release()
 					}

@@ -4,7 +4,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strings"
 	"time"
@@ -48,7 +47,7 @@ func buildTmuxStatusLine(worktreePath string) string {
 }
 
 func currentBranchInWorktree(worktreePath string) string {
-	gitPath, err := exec.LookPath("git")
+	gitPath, err := gitPath()
 	if err != nil {
 		return ""
 	}
@@ -68,12 +67,12 @@ func ghSummaryForBranchCached(worktreePath string, branch string) string {
 	if branch == "" {
 		return "GH: PR - | CI - | Review -"
 	}
-	gitPath, err := exec.LookPath("git")
+	gitPath, err := gitPath()
 	if err != nil {
 		return "GH: PR - | CI - | Review -"
 	}
-	repoRoot, err := gitOutputInDir(worktreePath, gitPath, "rev-parse", "--show-toplevel")
-	if err != nil || strings.TrimSpace(repoRoot) == "" {
+	repoRoot, err := repoRootForDir(worktreePath, gitPath)
+	if err != nil {
 		return "GH: PR - | CI - | Review -"
 	}
 	if summary, ok := readCachedGHSummary(repoRoot, branch); ok {

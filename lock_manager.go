@@ -8,7 +8,6 @@ import (
 	"errors"
 	"fmt"
 	"os"
-	"os/exec"
 	"os/user"
 	"path/filepath"
 	"strings"
@@ -216,7 +215,7 @@ func (m *LockManager) lockPath(repoRoot string, worktreePath string) (string, er
 
 func worktreeID(repoRoot string, worktreePath string) (string, error) {
 	repoIDRoot := repoRoot
-	if gitPath, err := exec.LookPath("git"); err == nil {
+	if gitPath, err := gitPath(); err == nil {
 		commonDir, err := gitOutputInDir(repoRoot, gitPath, "rev-parse", "--path-format=absolute", "--git-common-dir")
 		if err == nil && strings.TrimSpace(commonDir) != "" {
 			repoIDRoot = commonDir

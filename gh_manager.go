@@ -284,7 +284,7 @@ func unresolvedCommentsForPR(ghPath string, repoRoot string, owner string, name 
 }
 
 func resolveGitHubRepo(repoRoot string) (string, string, error) {
-	gitPath, err := exec.LookPath("git")
+	gitPath, err := requireGitPath()
 	if err != nil {
 		return "", "", err
 	}
