@@ -35,7 +35,7 @@ Inside the picker:
 - `enter`: actions for selected free worktree
 - `s`: open shell in selected free worktree
 - `d`: delete selected worktree (with confirmation)
-- `u`: unlock selected locked worktree (with confirmation)
+- `u`: unlock selected in-use worktree (with confirmation)
 - `p`: open selected worktree PR URL (worktree view)
 - `P`: open selected PR URL (PR view)
 - `r`: manual refresh (bypasses GH cache)
@@ -50,7 +50,7 @@ Inside the picker:
 - Reuse an existing worktree by selecting `Use <branch>`
 - Open a shell directly in a selected worktree
 - Locking to prevent concurrent worktree use
-- Force-unlock flow for locked worktrees (`u`)
+- Force-unlock flow for in-use worktrees (`u`)
 - Orphaned worktree detection and disabled selection
 - Branch list filtering + recently-used ordering
 - Live local status polling in the root menu (`1s`)

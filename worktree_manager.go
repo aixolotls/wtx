@@ -61,16 +61,9 @@ func (m *WorktreeManager) ResolveBaseRefForNewBranch() string {
 		_ = gitRunInDir(repoRoot, gitPath, "fetch", "--quiet")
 	}
 	if ghRef, err := defaultBaseRefFromGitHub(repoRoot); err == nil && strings.TrimSpace(ghRef) != "" {
-		if remoteRef, ok := asOriginRemoteRef(repoRoot, gitPath, ghRef); ok {
-			return remoteRef
-		}
-		return strings.TrimSpace(ghRef)
+		return canonicalBaseRef(repoRoot, gitPath, ghRef)
 	}
-	ref := defaultBaseRef(repoRoot, gitPath)
-	if ref != "" && ref != "HEAD" {
-		return ref
-	}
-	return "main"
+	return canonicalBaseRef(repoRoot, gitPath, defaultBaseRef(repoRoot, gitPath))
 }
 
 func (m *WorktreeManager) CreateWorktree(branch string, baseRef string) (WorktreeInfo, error) {
@@ -99,6 +92,7 @@ func (m *WorktreeManager) CreateWorktree(branch string, baseRef string) (Worktre
 	}
 	defer lock.Release()
 
+	baseRef = baseRefForWorktreeAdd(repoRoot, gitPath, baseRef)
 	cmd := exec.Command(gitPath, "worktree", "add", "-b", branch, target, baseRef)
 	cmd.Dir = layoutRoot
 	if err := cmd.Run(); err != nil {
@@ -174,6 +168,9 @@ func (m *WorktreeManager) DeleteWorktree(path string, force bool) error {
 	if err != nil {
 		return err
 	}
+	if err := ensureManagedWorktreePath(repoRoot, path); err != nil {
+		return err
+	}
 
 	args := []string{"worktree", "remove"}
 	if force {
@@ -192,6 +189,18 @@ func (m *WorktreeManager) DeleteWorktree(path string, force bool) error {
 		return err
 	}
 	return nil
+}
+
+func (m *WorktreeManager) CanDeleteWorktree(path string) error {
+	path = strings.TrimSpace(path)
+	if path == "" {
+		return errors.New("worktree path required")
+	}
+	_, repoRoot, err := requireGitContext(m.cwd)
+	if err != nil {
+		return err
+	}
+	return ensureManagedWorktreePath(repoRoot, path)
 }
 
 func (m *WorktreeManager) CheckoutExistingBranch(worktreePath string, branch string) error {
@@ -329,9 +338,50 @@ func gitRunInDir(dir string, path string, args ...string) error {
 func defaultBaseRef(repoRoot string, gitPath string) string {
 	ref, err := gitOutputInDir(repoRoot, gitPath, "symbolic-ref", "--short", "refs/remotes/origin/HEAD")
 	if err == nil && ref != "" {
-		return ref
+		return canonicalBaseRef(repoRoot, gitPath, ref)
 	}
 	return "main"
+}
+
+func canonicalBaseRef(_ string, _ string, ref string) string {
+	ref = strings.TrimSpace(ref)
+	if ref == "" || ref == "HEAD" {
+		return "main"
+	}
+	branch := shortBranch(ref)
+	if strings.TrimSpace(branch) == "" || branch == "detached" {
+		return "main"
+	}
+	return branch
+}
+
+func localBranchExists(repoRoot string, gitPath string, branch string) bool {
+	branch = strings.TrimSpace(branch)
+	if branch == "" {
+		return false
+	}
+	_, err := gitOutputInDir(repoRoot, gitPath, "show-ref", "--verify", "refs/heads/"+branch)
+	return err == nil
+}
+
+func baseRefForWorktreeAdd(repoRoot string, gitPath string, baseRef string) string {
+	baseRef = strings.TrimSpace(baseRef)
+	if baseRef == "" || baseRef == "HEAD" {
+		return "HEAD"
+	}
+	branch := shortBranch(baseRef)
+	if strings.TrimSpace(branch) != "" && branch != "detached" {
+		if localBranchExists(repoRoot, gitPath, branch) {
+			return branch
+		}
+		if remoteRef, ok := asOriginRemoteRef(repoRoot, gitPath, branch); ok {
+			return remoteRef
+		}
+	}
+	if remoteRef, ok := asOriginRemoteRef(repoRoot, gitPath, baseRef); ok {
+		return remoteRef
+	}
+	return baseRef
 }
 
 func defaultBaseRefFromGitHub(repoRoot string) (string, error) {
@@ -383,9 +433,7 @@ func worktreePathExists(path string) (bool, error) {
 }
 
 func nextWorktreePath(repoRoot string) (string, error) {
-	base := filepath.Base(repoRoot)
-	parent := filepath.Dir(repoRoot)
-	worktreeRoot := filepath.Join(parent, base+".wt")
+	worktreeRoot := managedWorktreeRoot(repoRoot)
 	for i := 1; i < 100; i++ {
 		candidate := filepath.Join(worktreeRoot, fmt.Sprintf("wt.%d", i))
 		_, statErr := os.Stat(candidate)
@@ -413,4 +461,31 @@ func worktreeLayoutRoot(repoRoot string, gitPath string) string {
 		return filepath.Dir(commonDir)
 	}
 	return repoRoot
+}
+
+func ensureManagedWorktreePath(repoRoot string, worktreePath string) error {
+	managedRoot := managedWorktreeRoot(repoRoot)
+	managedRootReal, err := realPathOrAbs(managedRoot)
+	if err != nil {
+		return err
+	}
+	worktreeReal, err := realPathOrAbs(worktreePath)
+	if err != nil {
+		return err
+	}
+	rel, err := filepath.Rel(managedRootReal, worktreeReal)
+	if err != nil {
+		return err
+	}
+	rel = filepath.Clean(strings.TrimSpace(rel))
+	if rel == "." || rel == ".." || filepath.IsAbs(rel) || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+		return fmt.Errorf("cannot delete worktree outside %s", managedRoot)
+	}
+	return nil
+}
+
+func managedWorktreeRoot(repoRoot string) string {
+	base := filepath.Base(repoRoot)
+	parent := filepath.Dir(repoRoot)
+	return filepath.Join(parent, base+".wt")
 }
