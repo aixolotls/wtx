@@ -4,6 +4,12 @@ import (
 	"fmt"
 	"os"
 	"strings"
+	"sync"
+)
+
+var (
+	tabTitleMu   sync.Mutex
+	lastTabTitle string
 )
 
 func setITermWTXTab() {
@@ -28,6 +34,13 @@ func setITermTab(title string) {
 	if title == "" {
 		title = "wtx"
 	}
+	tabTitleMu.Lock()
+	if title == lastTabTitle {
+		tabTitleMu.Unlock()
+		return
+	}
+	lastTabTitle = title
+	tabTitleMu.Unlock()
 	// Outside tmux we control title directly; inside tmux title is managed by tmux.
 	if !inTmux {
 		writeTerminalEscape("\x1b]0;" + title + "\x07")
