@@ -970,8 +970,10 @@ func renderPRSelector(prs []PRListData, cursor int, loading bool, loadingGlyph s
 			pr.ReviewApproved,
 			pr.ReviewRequired,
 			pr.ReviewKnown,
+			pr.UnresolvedComments,
 			pr.ResolvedComments,
 			pr.CommentThreadsTotal,
+			pr.CommentsKnown,
 			pr.Status,
 		)
 		if cellLoading {
@@ -1191,13 +1193,14 @@ func renderSelector(status WorktreeStatus, cursor int, pendingByBranch map[strin
 		}
 		pending := pendingByBranch[strings.TrimSpace(wt.Branch)]
 		rows = append(rows, uiview.WorktreeRow{
-			BranchLabel:   label,
-			PRLabel:       formatPRLabel(wt, pending, loadingGlyph),
-			CILabel:       formatCILabel(wt, pending, loadingGlyph),
-			ReviewLabel:   formatReviewLabel(wt, pending, loadingGlyph),
-			CommentsLabel: formatCommentsLabel(wt, pending, loadingGlyph),
-			PRStatusLabel: formatPRStatusLabel(wt, pending, loadingGlyph),
-			Disabled:      disabled,
+			BranchLabel:     label,
+			PRLabel:         formatPRLabel(wt, pending, loadingGlyph),
+			CILabel:         formatCILabel(wt, pending, loadingGlyph),
+			ReviewLabel:     formatReviewLabel(wt, pending, loadingGlyph),
+			CommentsLabel:   formatCommentsLabel(wt, pending, loadingGlyph),
+			UnresolvedLabel: formatUnresolvedLabel(wt, pending, loadingGlyph),
+			PRStatusLabel:   formatPRStatusLabel(wt, pending, loadingGlyph),
+			Disabled:        disabled,
 		})
 	}
 	rows = append(rows, uiview.WorktreeRow{BranchLabel: "+ New worktree"})
@@ -1411,7 +1414,7 @@ func formatPRStatusLabel(wt WorktreeInfo, pending bool, loadingGlyph string) str
 		return "-"
 	}
 	switch status {
-	case "draft", "open", "closed", "merged":
+	case "merged", "closed", "conflict", "can-merge", "awaiting-review", "awaiting-ci", "awaiting-comments", "draft", "open":
 		return status
 	default:
 		return "-"
@@ -1444,7 +1447,7 @@ func formatCommentsLabel(wt WorktreeInfo, pending bool, loadingGlyph string) str
 	if pending {
 		return loadingGlyph
 	}
-	if !wt.HasPR || wt.CommentThreadsTotal <= 0 {
+	if !wt.HasPR || !wt.CommentsKnown || wt.CommentThreadsTotal <= 0 {
 		return "-"
 	}
 	resolved := wt.ResolvedComments
@@ -1455,6 +1458,20 @@ func formatCommentsLabel(wt WorktreeInfo, pending bool, loadingGlyph string) str
 		resolved = wt.CommentThreadsTotal
 	}
 	return fmt.Sprintf("(%d/%d)", resolved, wt.CommentThreadsTotal)
+}
+
+func formatUnresolvedLabel(wt WorktreeInfo, pending bool, loadingGlyph string) string {
+	if pending {
+		return loadingGlyph
+	}
+	if !wt.HasPR || !wt.CommentsKnown {
+		return "-"
+	}
+	unresolved := wt.UnresolvedComments
+	if unresolved < 0 {
+		unresolved = 0
+	}
+	return fmt.Sprintf("%d", unresolved)
 }
 
 func formatReviewLabel(wt WorktreeInfo, pending bool, loadingGlyph string) string {
@@ -1687,6 +1704,7 @@ func applyPRDataToStatus(status *WorktreeStatus, byBranch map[string]PRData) {
 		status.Worktrees[i].UnresolvedComments = 0
 		status.Worktrees[i].ResolvedComments = 0
 		status.Worktrees[i].CommentThreadsTotal = 0
+		status.Worktrees[i].CommentsKnown = false
 		if b == "" {
 			continue
 		}
@@ -1706,6 +1724,7 @@ func applyPRDataToStatus(status *WorktreeStatus, byBranch map[string]PRData) {
 			status.Worktrees[i].UnresolvedComments = pr.UnresolvedComments
 			status.Worktrees[i].ResolvedComments = pr.ResolvedComments
 			status.Worktrees[i].CommentThreadsTotal = pr.CommentThreadsTotal
+			status.Worktrees[i].CommentsKnown = pr.CommentsKnown
 		}
 	}
 }
