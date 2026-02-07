@@ -111,9 +111,7 @@ func (m *WorktreeManager) CreateWorktree(branch string, baseRef string) (Worktre
 	defer lock.Release()
 
 	baseRef = baseRefForWorktreeAdd(repoRoot, gitPath, baseRef)
-	cmd := exec.Command(gitPath, "worktree", "add", "-b", branch, target, baseRef)
-	cmd.Dir = layoutRoot
-	if err := cmd.Run(); err != nil {
+	if err := runCommandInDir(layoutRoot, gitPath, "worktree", "add", "-b", branch, target, baseRef); err != nil {
 		return WorktreeInfo{}, err
 	}
 
@@ -142,9 +140,7 @@ func (m *WorktreeManager) CreateWorktreeFromBranch(branch string) (WorktreeInfo,
 	}
 	defer lock.Release()
 
-	cmd := exec.Command(gitPath, "worktree", "add", target, branch)
-	cmd.Dir = layoutRoot
-	if err := cmd.Run(); err != nil {
+	if err := runCommandInDir(layoutRoot, gitPath, "worktree", "add", target, branch); err != nil {
 		return WorktreeInfo{}, err
 	}
 
@@ -157,9 +153,7 @@ func (m *WorktreeManager) ListLocalBranchesByRecentUse() ([]string, error) {
 		return nil, err
 	}
 
-	cmd := exec.Command(gitPath, "for-each-ref", "--sort=-committerdate", "--format=%(refname:short)", "refs/heads")
-	cmd.Dir = repoRoot
-	output, err := cmd.Output()
+	output, err := commandOutputInDir(repoRoot, gitPath, "for-each-ref", "--sort=-committerdate", "--format=%(refname:short)", "refs/heads")
 	if err != nil {
 		return nil, err
 	}
@@ -204,10 +198,8 @@ func (m *WorktreeManager) DeleteWorktree(path string, force bool) error {
 	}
 	defer lock.Release()
 
-	cmd := exec.Command(gitPath, args...)
-	cmd.Dir = repoRoot
-	if out, err := cmd.CombinedOutput(); err != nil {
-		return commandErrorWithOutput(err, out)
+	if err := runCommandInDir(repoRoot, gitPath, args...); err != nil {
+		return err
 	}
 	return nil
 }
@@ -217,6 +209,21 @@ func commandErrorWithOutput(err error, out []byte) error {
 	if msg != "" {
 		return errors.New(msg)
 	}
+	return err
+}
+
+func commandOutputInDir(dir string, path string, args ...string) ([]byte, error) {
+	cmd := exec.Command(path, args...)
+	cmd.Dir = dir
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		return nil, commandErrorWithOutput(err, out)
+	}
+	return out, nil
+}
+
+func runCommandInDir(dir string, path string, args ...string) error {
+	_, err := commandOutputInDir(dir, path, args...)
 	return err
 }
 
@@ -245,9 +252,7 @@ func (m *WorktreeManager) CheckoutExistingBranch(worktreePath string, branch str
 	if err != nil {
 		return err
 	}
-	cmd := exec.Command(gitPath, "checkout", branch)
-	cmd.Dir = worktreePath
-	return cmd.Run()
+	return runCommandInDir(worktreePath, gitPath, "checkout", branch)
 }
 
 func (m *WorktreeManager) AcquireWorktreeLock(worktreePath string) (*WorktreeLock, error) {
@@ -275,9 +280,7 @@ func (m *WorktreeManager) UnlockWorktree(worktreePath string) error {
 }
 
 func listWorktrees(repoRoot string, gitPath string) ([]WorktreeInfo, []string, error) {
-	cmd := exec.Command(gitPath, "worktree", "list", "--porcelain")
-	cmd.Dir = repoRoot
-	output, err := cmd.Output()
+	output, err := commandOutputInDir(repoRoot, gitPath, "worktree", "list", "--porcelain")
 	if err != nil {
 		return nil, nil, err
 	}
@@ -349,9 +352,7 @@ func shortBranch(value string) string {
 }
 
 func gitOutputInDir(dir string, path string, args ...string) (string, error) {
-	cmd := exec.Command(path, args...)
-	cmd.Dir = dir
-	output, err := cmd.Output()
+	output, err := commandOutputInDir(dir, path, args...)
 	if err != nil {
 		return "", err
 	}
@@ -359,9 +360,7 @@ func gitOutputInDir(dir string, path string, args ...string) (string, error) {
 }
 
 func gitRunInDir(dir string, path string, args ...string) error {
-	cmd := exec.Command(path, args...)
-	cmd.Dir = dir
-	return cmd.Run()
+	return runCommandInDir(dir, path, args...)
 }
 
 func defaultBaseRefWithRemote(repoRoot string, gitPath string, remote string) string {
@@ -430,9 +429,7 @@ func defaultBaseRefFromGitHub(repoRoot string) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	cmd := exec.Command(ghPath, "repo", "view", owner+"/"+name, "--json", "defaultBranchRef", "--jq", ".defaultBranchRef.name")
-	cmd.Dir = repoRoot
-	out, err := cmd.Output()
+	out, err := commandOutputInDir(repoRoot, ghPath, "repo", "view", owner+"/"+name, "--json", "defaultBranchRef", "--jq", ".defaultBranchRef.name")
 	if err != nil {
 		return "", err
 	}
