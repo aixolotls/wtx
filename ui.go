@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/charmbracelet/bubbles/paginator"
@@ -123,7 +124,9 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			applyPRDataToStatus(&m.status, m.ghDataByBranch)
 		}
 		repo := strings.TrimSpace(m.status.RepoRoot)
-		fetchByBranch := key != m.ghLoadedKey && key != m.ghFetchingKey
+		fetchByBranch := m.viewPager.Page == worktreePage &&
+			key != m.ghLoadedKey &&
+			key != m.ghFetchingKey
 		fetchPRList := m.viewPager.Page == prsPage &&
 			repo != "" &&
 			repo != m.prListLoadedRepo &&
@@ -535,6 +538,18 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 			m.prSearchActive = false
 			m.prSearchInput.Blur()
+			key := ghDataKeyForStatus(m.status)
+			if key != "" && key != m.ghLoadedKey && key != m.ghFetchingKey {
+				m.ghFetchingKey = key
+				m.ghPendingByBranch = pendingBranchesByName(m.status)
+				force := m.forceGHRefresh
+				m.forceGHRefresh = false
+				return m, tea.Batch(
+					pagerCmd,
+					fetchGHDataCmd(m.orchestrator, m.status, key, force, true, false, false),
+					m.ghSpinner.Tick,
+				)
+			}
 			return m, pagerCmd
 		}
 		if m.viewPager.Page == prsPage {
@@ -1135,24 +1150,38 @@ func fetchGHDataCmd(orchestrator *WorktreeOrchestrator, status WorktreeStatus, k
 				prs = []PRListData{}
 			}
 		} else {
+			var wg sync.WaitGroup
 			if includeByBranch {
-				byBranch, byBranchErr = orchestrator.PRDataForStatusWithError(status, force)
-				if byBranch == nil {
-					byBranch = map[string]PRData{}
-				}
+				wg.Add(1)
+				go func() {
+					defer wg.Done()
+					byBranch, byBranchErr = orchestrator.PRDataForStatusWithError(status, force)
+					if byBranch == nil {
+						byBranch = map[string]PRData{}
+					}
+				}()
 			}
 			if includePRList {
-				prs, prListErr = orchestrator.PRsForStatusWithError(status, force, false)
-				if prs == nil {
-					prs = []PRListData{}
-				}
+				wg.Add(1)
+				go func() {
+					defer wg.Done()
+					prs, prListErr = orchestrator.PRsForStatusWithError(status, force, false)
+					if prs == nil {
+						prs = []PRListData{}
+					}
+				}()
 			}
 			if includePRListEnriched {
-				prs, prListErr = orchestrator.PRsForStatusWithError(status, force, true)
-				if prs == nil {
-					prs = []PRListData{}
-				}
+				wg.Add(1)
+				go func() {
+					defer wg.Done()
+					prs, prListErr = orchestrator.PRsForStatusWithError(status, force, true)
+					if prs == nil {
+						prs = []PRListData{}
+					}
+				}()
 			}
+			wg.Wait()
 		}
 		err := byBranchErr
 		if err == nil {
