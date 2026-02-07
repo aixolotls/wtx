@@ -34,13 +34,9 @@ func setITermTab(title string) {
 	if title == "" {
 		title = "wtx"
 	}
-	tabTitleMu.Lock()
-	if title == lastTabTitle {
-		tabTitleMu.Unlock()
+	if shouldSkipTabTitleUpdate(title) {
 		return
 	}
-	lastTabTitle = title
-	tabTitleMu.Unlock()
 	// Outside tmux we control title directly; inside tmux title is managed by tmux.
 	if !inTmux {
 		writeTerminalEscape("\x1b]0;" + title + "\x07")
@@ -73,4 +69,14 @@ func writeTerminalEscape(seq string) {
 		return
 	}
 	fmt.Fprint(os.Stdout, seq)
+}
+
+func shouldSkipTabTitleUpdate(title string) bool {
+	tabTitleMu.Lock()
+	defer tabTitleMu.Unlock()
+	if title == lastTabTitle {
+		return true
+	}
+	lastTabTitle = title
+	return false
 }
