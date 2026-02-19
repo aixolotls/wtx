@@ -259,7 +259,7 @@ func (m *WorktreeManager) CheckoutExistingBranch(worktreePath string, branch str
 	return runCommandInDir(worktreePath, gitPath, "checkout", branch)
 }
 
-func (m *WorktreeManager) CheckoutNewBranch(worktreePath string, branch string, baseRef string) error {
+func (m *WorktreeManager) CheckoutNewBranch(worktreePath string, branch string, baseRef string, doFetch bool) error {
 	worktreePath = strings.TrimSpace(worktreePath)
 	branch = strings.TrimSpace(branch)
 	baseRef = strings.TrimSpace(baseRef)
@@ -269,16 +269,35 @@ func (m *WorktreeManager) CheckoutNewBranch(worktreePath string, branch string, 
 	if branch == "" {
 		return errors.New("branch name required")
 	}
-	if baseRef == "" {
-		baseRef = "HEAD"
-	}
-	gitPath, repoRoot, err := requireGitContext(worktreePath)
+	gitPath, repoRoot, err := requireGitContext(m.cwd)
 	if err != nil {
 		return err
 	}
-	baseRef = baseRefForWorktreeAdd(repoRoot, gitPath, baseRef)
+	if doFetch {
+		if err := m.FetchRepo(); err != nil {
+			return err
+		}
+	}
+	if localBranchExists(repoRoot, gitPath, branch) {
+		cmd := exec.Command(gitPath, "checkout", branch)
+		cmd.Dir = worktreePath
+		return cmd.Run()
+	}
+	if baseRef == "" {
+		baseRef = "HEAD"
+	}
 	cmd := exec.Command(gitPath, "checkout", "-b", branch, baseRef)
 	cmd.Dir = worktreePath
+	return cmd.Run()
+}
+
+func (m *WorktreeManager) FetchRepo() error {
+	gitPath, repoRoot, err := requireGitContext(m.cwd)
+	if err != nil {
+		return err
+	}
+	cmd := exec.Command(gitPath, "fetch")
+	cmd.Dir = repoRoot
 	return cmd.Run()
 }
 

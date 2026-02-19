@@ -4,10 +4,8 @@ import (
 	"fmt"
 	"sort"
 	"strings"
-	"sync"
 	"time"
 
-	"github.com/charmbracelet/bubbles/paginator"
 	"github.com/charmbracelet/bubbles/spinner"
 	"github.com/charmbracelet/bubbles/textinput"
 	tea "github.com/charmbracelet/bubbletea"
@@ -16,55 +14,77 @@ import (
 )
 
 type model struct {
-	mgr                  *WorktreeManager
-	orchestrator         *WorktreeOrchestrator
-	runner               *Runner
-	status               WorktreeStatus
-	listIndex            int
-	prIndex              int
-	prs                  []PRListData
-	viewPager            paginator.Model
-	ready                bool
-	width                int
-	height               int
-	mode                 uiMode
-	branchInput          textinput.Model
-	newBranchInput       textinput.Model
-	prSearchInput        textinput.Model
-	prSearchActive       bool
-	spinner              spinner.Model
-	ghSpinner            spinner.Model
-	ghPendingByBranch    map[string]bool
-	ghDataByBranch       map[string]PRData
-	ghLoadedKey          string
-	ghFetchingKey        string
-	prListLoadedRepo     string
-	prListFetchingRepo   string
-	prListEnrichingRepo  string
-	forcePREnrichRefresh bool
-	forceGHRefresh       bool
-	ghWarnMsg            string
-	errMsg               string
-	warnMsg              string
-	creatingBranch       string
-	creatingBaseRef      string
-	creatingExisting     bool
-	creatingStartedAt    time.Time
-	deletePath           string
-	deleteBranch         string
-	unlockPath           string
-	unlockBranch         string
-	actionBranch         string
-	actionIndex          int
-	actionCreate         bool
-	branchOptions        []string
-	branchSuggestions    []string
-	branchIndex          int
-	pendingPath          string
-	pendingBranch        string
-	pendingOpenShell     bool
-	pendingLock          *WorktreeLock
-	autoActionPath       string
+	mgr                   *WorktreeManager
+	orchestrator          *WorktreeOrchestrator
+	runner                *Runner
+	status                WorktreeStatus
+	listIndex             int
+	ready                 bool
+	width                 int
+	height                int
+	mode                  uiMode
+	branchInput           textinput.Model
+	newBranchInput        textinput.Model
+	spinner               spinner.Model
+	ghSpinner             spinner.Model
+	ghPendingByBranch     map[string]bool
+	ghDataByBranch        map[string]PRData
+	ghLoadedKey           string
+	ghFetchingKey         string
+	forceGHRefresh        bool
+	ghWarnMsg             string
+	errMsg                string
+	warnMsg               string
+	creatingBranch        string
+	creatingBaseRef       string
+	creatingExisting      bool
+	creatingStartedAt     time.Time
+	deletePath            string
+	deleteBranch          string
+	unlockPath            string
+	unlockBranch          string
+	actionBranch          string
+	actionIndex           int
+	actionCreate          bool
+	branchOptions         []string
+	branchSuggestions     []string
+	branchIndex           int
+	pendingPath           string
+	pendingBranch         string
+	pendingOpenShell      bool
+	pendingLock           *WorktreeLock
+	autoActionPath        string
+	openLoading           bool
+	openLoadErr           string
+	openSelected          int
+	openEnteringNew       bool
+	openTypeahead         string
+	openTypeaheadAt       time.Time
+	openBranches          []openBranchOption
+	openLockedBranches    []openBranchOption
+	openSlots             []openSlotState
+	openPRBranches        []string
+	openFetchID           string
+	openShowDebug         bool
+	openDebugIndex        int
+	openDebugCreating     bool
+	openConfirmAction     string
+	openConfirmPath       string
+	openConfirmBranch     string
+	openStage             openStage
+	openTargetBranch      string
+	openTargetIsNew       bool
+	openTargetBaseRef     string
+	openTargetFetch       bool
+	openPickIndex         int
+	openPickConfirm       bool
+	openPickConfirmPath   string
+	openPickConfirmBranch string
+	openDefaultBaseRef    string
+	openDefaultFetch      bool
+	openBaseRefInput      textinput.Model
+	openAskBaseDefault    bool
+	openAskFetchDefault   bool
 }
 
 func (m model) PendingWorktree() (string, string, bool, *WorktreeLock) {
@@ -78,17 +98,28 @@ func newModel() model {
 	m := model{mgr: mgr, orchestrator: orchestrator, runner: NewRunner(lockMgr)}
 	m.branchInput = newBranchInput()
 	m.newBranchInput = newCreateBranchInput()
-	m.prSearchInput = newPRSearchInput()
 	m.spinner = newSpinner()
 	m.ghSpinner = newGHSpinner()
 	m.ghPendingByBranch = map[string]bool{}
 	m.ghDataByBranch = map[string]PRData{}
-	m.viewPager = newViewPager()
+	m.mode = modeOpen
+	m.openStage = openStageMain
+	m.openSelected = 0
+	m.openDefaultFetch = true
+	m.openBaseRefInput = newBaseRefInput()
+	if cfg, err := LoadConfig(); err == nil {
+		if strings.TrimSpace(cfg.NewBranchBaseRef) != "" {
+			m.openDefaultBaseRef = strings.TrimSpace(cfg.NewBranchBaseRef)
+		}
+		if cfg.NewBranchFetchFirst != nil {
+			m.openDefaultFetch = *cfg.NewBranchFetchFirst
+		}
+	}
 	return m
 }
 
 func (m model) Init() tea.Cmd {
-	return tea.Batch(fetchStatusCmd(m.orchestrator), pollStatusTickCmd())
+	return tea.Batch(loadOpenScreenCmd(m.orchestrator, m.mgr), m.ghSpinner.Tick)
 }
 
 func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
@@ -96,10 +127,108 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		syncTabTitleWithSelection(m)
 	}()
 	switch msg := msg.(type) {
+	case openScreenLoadedMsg:
+		m.ready = true
+		m.status = msg.status
+		m.openLoadErr = ""
+		m.errMsg = ""
+		if msg.err != nil {
+			m.openLoading = false
+			m.openBranches = nil
+			m.openSlots = nil
+			m.openPRBranches = nil
+			m.openLoadErr = msg.err.Error()
+			return m, nil
+		}
+		m.openBranches = msg.branches
+		m.openLockedBranches = msg.lockedBranches
+		m.openSlots = msg.slots
+		m.openPRBranches = msg.prBranches
+		m.openEnteringNew = false
+		m.openTypeahead = ""
+		m.openDebugIndex = clampOpenDebugIndex(m.openDebugIndex, len(msg.slots))
+		m.openDebugCreating = false
+		m.openConfirmAction = ""
+		m.openConfirmPath = ""
+		m.openConfirmBranch = ""
+		if strings.TrimSpace(m.openDefaultBaseRef) == "" {
+			m.openDefaultBaseRef = strings.TrimSpace(msg.status.BaseRef)
+			if m.openDefaultBaseRef == "" {
+				m.openDefaultBaseRef = "origin/main"
+			}
+		}
+		if m.openStage == openStageMain {
+			m.openBaseRefInput.SetValue(m.openDefaultBaseRef)
+			m.openBaseRefInput.Blur()
+			m.newBranchInput.Blur()
+		}
+		m.openSelected = clampOpenSelection(m.openSelected, len(m.openBranches))
+		m.openFetchID = msg.fetchID
+		m.openLoading = true
+		if len(m.openPRBranches) == 0 {
+			m.openLoading = false
+			return m, nil
+		}
+		return m, tea.Batch(fetchOpenPRDataCmd(m.orchestrator, m.status.RepoRoot, m.openPRBranches, msg.fetchID), m.ghSpinner.Tick)
+	case openScreenPRDataMsg:
+		if strings.TrimSpace(msg.fetchID) == "" || msg.fetchID != m.openFetchID {
+			return m, nil
+		}
+		m.openLoading = false
+		if msg.err != nil {
+			m.openLoadErr = msg.err.Error()
+			return m, nil
+		}
+		m.openLoadErr = ""
+		applyPRDataToOpenState(&m.openBranches, &m.openLockedBranches, &m.openSlots, msg.byBranch)
+		return m, nil
+	case openDeleteWorktreeDoneMsg:
+		if msg.err != nil {
+			m.errMsg = msg.err.Error()
+			return m, nil
+		}
+		m.errMsg = ""
+		m.openLoading = true
+		return m, tea.Batch(loadOpenScreenCmd(m.orchestrator, m.mgr), m.ghSpinner.Tick)
+	case openUnlockWorktreeDoneMsg:
+		if msg.err != nil {
+			m.errMsg = msg.err.Error()
+			return m, nil
+		}
+		m.errMsg = ""
+		m.openLoading = true
+		return m, tea.Batch(loadOpenScreenCmd(m.orchestrator, m.mgr), m.ghSpinner.Tick)
+	case openCreateWorktreeDoneMsg:
+		if msg.err != nil {
+			m.errMsg = msg.err.Error()
+			return m, nil
+		}
+		m.errMsg = ""
+		m.openLoading = true
+		m.openDebugCreating = false
+		m.newBranchInput.Blur()
+		m.newBranchInput.SetValue("")
+		return m, tea.Batch(loadOpenScreenCmd(m.orchestrator, m.mgr), m.ghSpinner.Tick)
+	case openUseReadyMsg:
+		if msg.err != nil {
+			m.errMsg = msg.err.Error()
+			return m, nil
+		}
+		m.errMsg = ""
+		m.warnMsg = ""
+		m.pendingPath = msg.path
+		m.pendingBranch = msg.branch
+		m.pendingOpenShell = msg.openShell
+		m.pendingLock = msg.lock
+		return m, tea.Quit
+	case openDefaultsSavedMsg:
+		if msg.err != nil {
+			m.errMsg = msg.err.Error()
+		}
+		return m, nil
 	case statusMsg:
 		m.status = WorktreeStatus(msg)
 		m.listIndex = clampListIndex(m.listIndex, m.status)
-		m.prIndex = clampPRIndex(m.prIndex, filteredPRs(m.prs, m.prSearchInput.Value()))
 		if m.autoActionPath != "" {
 			if idx, wt, ok := findWorktreeByPath(m.status, m.autoActionPath); ok {
 				m.listIndex = idx
@@ -115,39 +244,23 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if key == "" {
 			m.ghPendingByBranch = map[string]bool{}
 			m.ghDataByBranch = map[string]PRData{}
-			m.prs = nil
-			m.prIndex = 0
 			m.ghLoadedKey = ""
 			m.ghFetchingKey = ""
-			m.prListLoadedRepo = ""
-			m.prListFetchingRepo = ""
-			m.prListEnrichingRepo = ""
 			m.ghWarnMsg = ""
 			return m, nil
 		}
 		if key == m.ghLoadedKey || key == m.ghFetchingKey {
 			applyPRDataToStatus(&m.status, m.ghDataByBranch)
 		}
-		repo := strings.TrimSpace(m.status.RepoRoot)
-		fetchByBranch := shouldFetchByBranch(m.viewPager.Page, key, m.ghLoadedKey, m.ghFetchingKey)
-		fetchPRList := m.viewPager.Page == prsPage &&
-			repo != "" &&
-			repo != m.prListLoadedRepo &&
-			repo != m.prListFetchingRepo
-		if !fetchByBranch && !fetchPRList {
+		if !shouldFetchByBranch(key, m.ghLoadedKey, m.ghFetchingKey) {
 			// Local status polling runs every second; avoid re-fetching GH unless needed.
 			return m, nil
 		}
-		if fetchByBranch {
-			m.ghFetchingKey = key
-			m.ghPendingByBranch = pendingBranchesByName(m.status)
-		}
-		if fetchPRList {
-			m.prListFetchingRepo = repo
-		}
+		m.ghFetchingKey = key
+		m.ghPendingByBranch = pendingBranchesByName(m.status)
 		force := m.forceGHRefresh
 		m.forceGHRefresh = false
-		cmd := fetchGHDataCmd(m.orchestrator, m.status, key, force, fetchByBranch, fetchPRList, false)
+		cmd := fetchGHDataCmd(m.orchestrator, m.status, key, force)
 		return m, tea.Batch(cmd, m.ghSpinner.Tick)
 	case ghDataMsg:
 		if strings.TrimSpace(msg.repoRoot) == "" || strings.TrimSpace(m.status.RepoRoot) == "" {
@@ -156,53 +269,19 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if msg.repoRoot != m.status.RepoRoot {
 			return m, nil
 		}
-		if msg.fetchedByBranch {
-			if strings.TrimSpace(msg.key) == "" || msg.key != m.ghFetchingKey {
-				msg.fetchedByBranch = false
-			}
+		if !msg.fetchedByBranch {
+			return m, nil
 		}
-		if msg.fetchedPRList {
-			if msg.repoRoot != m.prListFetchingRepo {
-				msg.fetchedPRList = false
-			}
-		}
-		if msg.fetchedPRListEnriched {
-			if msg.repoRoot != m.prListEnrichingRepo {
-				msg.fetchedPRListEnriched = false
-			}
-		}
-		if !msg.fetchedByBranch && !msg.fetchedPRList && !msg.fetchedPRListEnriched {
+		if strings.TrimSpace(msg.key) == "" || msg.key != m.ghFetchingKey {
 			// Ignore stale GH responses that raced with newer fetches.
 			return m, nil
 		}
 		m.ghWarnMsg = ghWarningFromErr(msg.err)
-		if msg.fetchedByBranch {
-			m.ghDataByBranch = msg.byBranch
-			applyPRDataToStatus(&m.status, m.ghDataByBranch)
-			m.ghPendingByBranch = map[string]bool{}
-			m.ghLoadedKey = msg.key
-			m.ghFetchingKey = ""
-		}
-		if msg.fetchedPRList {
-			m.prs = msg.prs
-			m.prListLoadedRepo = msg.repoRoot
-			m.prListFetchingRepo = ""
-			if m.viewPager.Page == prsPage && m.prListEnrichingRepo == "" {
-				m.prListEnrichingRepo = msg.repoRoot
-				forceEnrich := m.forcePREnrichRefresh
-				m.forcePREnrichRefresh = false
-				return m, tea.Batch(
-					fetchGHDataCmd(m.orchestrator, m.status, m.ghFetchingKey, forceEnrich, false, false, true),
-					m.ghSpinner.Tick,
-				)
-			}
-		}
-		if msg.fetchedPRListEnriched {
-			m.prs = msg.prs
-			m.prListLoadedRepo = msg.repoRoot
-			m.prListEnrichingRepo = ""
-		}
-		m.prIndex = clampPRIndex(m.prIndex, filteredPRs(m.prs, m.prSearchInput.Value()))
+		m.ghDataByBranch = msg.byBranch
+		applyPRDataToStatus(&m.status, m.ghDataByBranch)
+		m.ghPendingByBranch = map[string]bool{}
+		m.ghLoadedKey = msg.key
+		m.ghFetchingKey = ""
 		m.listIndex = clampListIndex(m.listIndex, m.status)
 		return m, nil
 	case pollStatusTickMsg:
@@ -210,6 +289,11 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, tea.Batch(fetchStatusCmd(m.orchestrator), pollStatusTickCmd())
 		}
 		return m, pollStatusTickCmd()
+	case openPickRefreshTickMsg:
+		if m.mode == modeOpen && m.openStage == openStagePickWorktree {
+			return m, tea.Batch(loadOpenScreenCmd(m.orchestrator, m.mgr), openPickRefreshTickCmd(), m.ghSpinner.Tick)
+		}
+		return m, nil
 	case createWorktreeDoneMsg:
 		m.mode = modeList
 		m.creatingBranch = ""
@@ -233,7 +317,14 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				cmds = append(cmds, cmd)
 			}
 		}
-		if len(m.ghPendingByBranch) > 0 || strings.TrimSpace(m.prListFetchingRepo) != "" || strings.TrimSpace(m.prListEnrichingRepo) != "" {
+		if m.mode == modeOpen && m.openLoading {
+			var cmd tea.Cmd
+			m.ghSpinner, cmd = m.ghSpinner.Update(msg)
+			if cmd != nil {
+				cmds = append(cmds, cmd)
+			}
+		}
+		if len(m.ghPendingByBranch) > 0 {
 			var cmd tea.Cmd
 			m.ghSpinner, cmd = m.ghSpinner.Update(msg)
 			if cmd != nil {
@@ -249,6 +340,425 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.height = msg.Height
 		return m, nil
 	case tea.KeyMsg:
+		if m.mode == modeOpen {
+			switch msg.String() {
+			case "q", "ctrl+c":
+				return m, tea.Quit
+			case "ctrl+d":
+				m.openShowDebug = !m.openShowDebug
+				m.openDebugIndex = clampOpenDebugIndex(m.openDebugIndex, len(m.openSlots))
+				return m, nil
+			}
+			if m.openShowDebug {
+				if m.openConfirmAction != "" {
+					switch msg.String() {
+					case "y", "Y":
+						action := m.openConfirmAction
+						path := m.openConfirmPath
+						m.openConfirmAction = ""
+						m.openConfirmPath = ""
+						m.openConfirmBranch = ""
+						if action == "delete" {
+							return m, deleteOpenWorktreeCmd(m.mgr, path)
+						}
+						if action == "unlock" {
+							return m, unlockOpenWorktreeCmd(m.mgr, path)
+						}
+						return m, nil
+					case "n", "N", "esc":
+						m.openConfirmAction = ""
+						m.openConfirmPath = ""
+						m.openConfirmBranch = ""
+						return m, nil
+					}
+					return m, nil
+				}
+				if m.openDebugCreating {
+					switch msg.String() {
+					case "enter":
+						branch := strings.TrimSpace(m.newBranchInput.Value())
+						if branch == "" {
+							m.errMsg = "Branch name required."
+							return m, nil
+						}
+						m.errMsg = ""
+						return m, createOpenWorktreeCmd(m.mgr, branch, m.status.BaseRef)
+					case "esc":
+						m.openDebugCreating = false
+						m.newBranchInput.Blur()
+						m.newBranchInput.SetValue("")
+						m.errMsg = ""
+						return m, nil
+					}
+					var cmd tea.Cmd
+					m.newBranchInput, cmd = m.newBranchInput.Update(msg)
+					return m, cmd
+				}
+				switch msg.String() {
+				case "esc":
+					m.openShowDebug = false
+					return m, nil
+				case "up", "k":
+					m.openDebugIndex = clampOpenDebugIndex(m.openDebugIndex-1, len(m.openSlots))
+					return m, nil
+				case "down", "j":
+					m.openDebugIndex = clampOpenDebugIndex(m.openDebugIndex+1, len(m.openSlots))
+					return m, nil
+				case "d":
+					slot, ok := selectedOpenDebugSlot(m.openSlots, m.openDebugIndex)
+					if !ok {
+						m.errMsg = "No worktree selected in debug list."
+						return m, nil
+					}
+					if slot.Locked {
+						m.errMsg = "Cannot remove a worktree that is in use. Unlock it first."
+						return m, nil
+					}
+					if slot.Dirty {
+						m.errMsg = "Cannot remove an unclean worktree."
+						return m, nil
+					}
+					m.openConfirmAction = "delete"
+					m.openConfirmPath = slot.Path
+					m.openConfirmBranch = slot.Branch
+					m.errMsg = ""
+					return m, nil
+				case "u":
+					slot, ok := selectedOpenDebugSlot(m.openSlots, m.openDebugIndex)
+					if !ok {
+						m.errMsg = "No worktree selected in debug list."
+						return m, nil
+					}
+					if !slot.Locked {
+						m.errMsg = "Worktree is not in use."
+						return m, nil
+					}
+					m.openConfirmAction = "unlock"
+					m.openConfirmPath = slot.Path
+					m.openConfirmBranch = slot.Branch
+					m.errMsg = ""
+					return m, nil
+				case "n":
+					m.openDebugCreating = true
+					m.newBranchInput.SetValue("")
+					m.newBranchInput.Focus()
+					m.errMsg = ""
+					return m, nil
+				case "ctrl+r":
+					m.openLoading = true
+					m.openLoadErr = ""
+					m.openTypeahead = ""
+					return m, tea.Batch(loadOpenScreenCmd(m.orchestrator, m.mgr), m.ghSpinner.Tick)
+				}
+				return m, nil
+			}
+			if m.openStage == openStageNewBranchConfig {
+				if m.openAskBaseDefault || m.openAskFetchDefault {
+					var saveCmd tea.Cmd
+					switch msg.String() {
+					case "y", "Y":
+						if m.openAskBaseDefault {
+							m.openDefaultBaseRef = strings.TrimSpace(m.openTargetBaseRef)
+							m.openAskBaseDefault = false
+							saveCmd = saveOpenDefaultsCmd(m.openDefaultBaseRef, m.openDefaultFetch)
+							if m.openTargetFetch != m.openDefaultFetch {
+								m.openAskFetchDefault = true
+								return m, saveCmd
+							}
+							// Continue to selection execution below.
+						} else if m.openAskFetchDefault {
+							m.openDefaultFetch = m.openTargetFetch
+							m.openAskFetchDefault = false
+							saveCmd = saveOpenDefaultsCmd(m.openDefaultBaseRef, m.openDefaultFetch)
+						}
+					case "n", "N", "esc":
+						if m.openAskBaseDefault {
+							m.openAskBaseDefault = false
+							if m.openTargetFetch != m.openDefaultFetch {
+								m.openAskFetchDefault = true
+								return m, nil
+							}
+						} else if m.openAskFetchDefault {
+							m.openAskFetchDefault = false
+						}
+					default:
+						return m, nil
+					}
+					if m.openAskBaseDefault || m.openAskFetchDefault {
+						return m, nil
+					}
+					// If both prompts are resolved, continue with selection attempt.
+					if reusable, ok := findReusableOpenSlot(m.openSlots, m.openTargetBranch); ok {
+						return m, tea.Batch(saveCmd, useExistingWorktreeCmd(m.mgr, reusable.Path, m.openTargetBranch))
+					}
+					if available, ok := findAnyAvailableOpenSlot(m.openSlots); ok {
+						return m, tea.Batch(saveCmd, checkoutNewInWorktreeCmd(m.mgr, available.Path, m.openTargetBranch, m.openTargetBaseRef, m.openTargetFetch))
+					}
+					m.openStage = openStagePickWorktree
+					m.openPickIndex = 0
+					m.openPickConfirm = false
+					return m, tea.Batch(saveCmd, loadOpenScreenCmd(m.orchestrator, m.mgr), openPickRefreshTickCmd(), m.ghSpinner.Tick)
+				}
+				switch msg.String() {
+				case "ctrl+r":
+					m.openLoading = true
+					m.openLoadErr = ""
+					return m, tea.Batch(loadOpenScreenCmd(m.orchestrator, m.mgr), m.ghSpinner.Tick)
+				case "esc":
+					m.openStage = openStageMain
+					m.openEnteringNew = false
+					m.newBranchInput.Blur()
+					m.openBaseRefInput.Blur()
+					return m, nil
+				case " ":
+					m.openTargetFetch = !m.openTargetFetch
+					return m, nil
+				case "enter":
+					if m.openLoading {
+						m.errMsg = "Still loading startup state; cannot continue yet."
+						return m, nil
+					}
+					branch := strings.TrimSpace(m.newBranchInput.Value())
+					if branch == "" {
+						m.errMsg = "Branch name required."
+						return m, nil
+					}
+					base := strings.TrimSpace(m.openBaseRefInput.Value())
+					if base == "" {
+						base = m.openDefaultBaseRef
+					}
+					if strings.TrimSpace(base) == "" {
+						base = "origin/main"
+					}
+					m.openTargetBranch = branch
+					m.openTargetIsNew = true
+					m.openTargetBaseRef = base
+					if m.openTargetBaseRef != m.openDefaultBaseRef {
+						m.openAskBaseDefault = true
+						return m, nil
+					}
+					if m.openTargetFetch != m.openDefaultFetch {
+						m.openAskFetchDefault = true
+						return m, nil
+					}
+					if reusable, ok := findReusableOpenSlot(m.openSlots, m.openTargetBranch); ok {
+						return m, useExistingWorktreeCmd(m.mgr, reusable.Path, m.openTargetBranch)
+					}
+					if available, ok := findAnyAvailableOpenSlot(m.openSlots); ok {
+						return m, checkoutNewInWorktreeCmd(m.mgr, available.Path, m.openTargetBranch, m.openTargetBaseRef, m.openTargetFetch)
+					}
+					m.openStage = openStagePickWorktree
+					m.openPickIndex = 0
+					m.openPickConfirm = false
+					return m, tea.Batch(loadOpenScreenCmd(m.orchestrator, m.mgr), openPickRefreshTickCmd(), m.ghSpinner.Tick)
+				}
+				var cmd tea.Cmd
+				m.openBaseRefInput, cmd = m.openBaseRefInput.Update(msg)
+				return m, cmd
+			}
+			if m.openStage == openStagePickWorktree {
+				if m.openPickConfirm {
+					switch msg.String() {
+					case "y", "Y":
+						path := m.openPickConfirmPath
+						m.openPickConfirm = false
+						m.openPickConfirmPath = ""
+						m.openPickConfirmBranch = ""
+						if err := m.mgr.UnlockWorktree(path); err != nil {
+							m.errMsg = err.Error()
+							return m, nil
+						}
+						if slot, ok := findOpenSlotByPath(m.openSlots, path); ok && slot.Dirty {
+							m.warnMsg = "Worktree is unclean. Clean it first."
+							m.pendingPath = slot.Path
+							m.pendingBranch = slot.Branch
+							m.pendingOpenShell = true
+							m.pendingLock = nil
+							return m, tea.Quit
+						}
+						if slot, ok := findOpenSlotByPath(m.openSlots, path); ok {
+							return m, openCmdForTargetOnSlot(m, slot)
+						}
+						m.openLoading = true
+						return m, tea.Batch(loadOpenScreenCmd(m.orchestrator, m.mgr), openPickRefreshTickCmd(), m.ghSpinner.Tick)
+					case "n", "N", "esc":
+						m.openPickConfirm = false
+						m.openPickConfirmPath = ""
+						m.openPickConfirmBranch = ""
+						return m, nil
+					default:
+						return m, nil
+					}
+				}
+				switch msg.String() {
+				case "ctrl+r":
+					m.openLoading = true
+					m.openLoadErr = ""
+					return m, tea.Batch(loadOpenScreenCmd(m.orchestrator, m.mgr), openPickRefreshTickCmd(), m.ghSpinner.Tick)
+				case "esc":
+					m.openStage = openStageMain
+					return m, nil
+				case "up", "k":
+					m.openPickIndex = clampOpenPickIndex(m.openPickIndex-1, m.openSlots)
+					return m, nil
+				case "down", "j":
+					m.openPickIndex = clampOpenPickIndex(m.openPickIndex+1, m.openSlots)
+					return m, nil
+				case "enter":
+					if m.openPickIndex == 0 {
+						return m, openCmdForCreateTarget(m)
+					}
+					slot, ok := selectedOpenDebugSlot(m.openSlots, m.openPickIndex-1)
+					if !ok {
+						m.errMsg = "No worktree selected."
+						return m, nil
+					}
+					if slot.Locked {
+						m.openPickConfirm = true
+						m.openPickConfirmPath = slot.Path
+						m.openPickConfirmBranch = slot.Branch
+						return m, nil
+					}
+					if slot.Dirty {
+						m.warnMsg = "Worktree is unclean. Clean it first."
+						m.pendingPath = slot.Path
+						m.pendingBranch = slot.Branch
+						m.pendingOpenShell = true
+						m.pendingLock = nil
+						return m, tea.Quit
+					}
+					return m, openCmdForTargetOnSlot(m, slot)
+				}
+				return m, nil
+			}
+			if msg.String() == "ctrl+r" {
+				m.openLoading = true
+				m.openLoadErr = ""
+				m.openEnteringNew = false
+				m.openTypeahead = ""
+				m.newBranchInput.Blur()
+				return m, tea.Batch(loadOpenScreenCmd(m.orchestrator, m.mgr), m.ghSpinner.Tick)
+			}
+			if m.openEnteringNew {
+				switch msg.String() {
+				case "enter":
+					branch := strings.TrimSpace(m.newBranchInput.Value())
+					if branch == "" {
+						m.errMsg = "Branch name required."
+						return m, nil
+					}
+					m.openStage = openStageNewBranchConfig
+					m.openEnteringNew = false
+					m.openTargetBranch = branch
+					m.openTargetIsNew = true
+					m.openTargetFetch = m.openDefaultFetch
+					m.openTargetBaseRef = m.openDefaultBaseRef
+					m.openBaseRefInput.SetValue(m.openDefaultBaseRef)
+					m.newBranchInput.Blur()
+					m.openBaseRefInput.Focus()
+					m.errMsg = ""
+					return m, nil
+				case "esc":
+					m.openEnteringNew = false
+					m.newBranchInput.Blur()
+					m.newBranchInput.SetValue("")
+					m.errMsg = ""
+					return m, nil
+				}
+				var cmd tea.Cmd
+				m.newBranchInput, cmd = m.newBranchInput.Update(msg)
+				return m, cmd
+			}
+			switch msg.String() {
+			case "up":
+				filtered := openFilteredIndices(m.openTypeahead, m.openBranches)
+				m.openSelected = moveOpenSelection(m.openSelected, -1, filtered)
+				return m, nil
+			case "down":
+				filtered := openFilteredIndices(m.openTypeahead, m.openBranches)
+				m.openSelected = moveOpenSelection(m.openSelected, 1, filtered)
+				return m, nil
+			case "enter":
+				if m.openSelected == 0 {
+					m.openEnteringNew = true
+					m.openTypeahead = ""
+					m.newBranchInput.Focus()
+					m.errMsg = ""
+					return m, nil
+				}
+				if m.openLoading {
+					m.errMsg = "Still loading startup state; selection is disabled."
+					return m, nil
+				}
+				index := m.openSelected - 1
+				if index < 0 || index >= len(m.openBranches) {
+					m.errMsg = "No branch selected."
+					return m, nil
+				}
+				branch := strings.TrimSpace(m.openBranches[index].Name)
+				if branch == "" {
+					m.errMsg = "No branch selected."
+					return m, nil
+				}
+				m.openTargetBranch = branch
+				m.openTargetIsNew = false
+				m.openTargetBaseRef = ""
+				m.openTargetFetch = false
+				if reusable, ok := findReusableOpenSlot(m.openSlots, branch); ok {
+					return m, useExistingWorktreeCmd(m.mgr, reusable.Path, branch)
+				}
+				if available, ok := findAnyAvailableOpenSlot(m.openSlots); ok {
+					return m, checkoutExistingInWorktreeCmd(m.mgr, available.Path, branch)
+				}
+				m.openStage = openStagePickWorktree
+				m.openPickIndex = 0
+				m.openPickConfirm = false
+				m.errMsg = ""
+				return m, tea.Batch(loadOpenScreenCmd(m.orchestrator, m.mgr), openPickRefreshTickCmd(), m.ghSpinner.Tick)
+			case "esc":
+				return m, nil
+			}
+			switch msg.Type {
+			case tea.KeyRunes:
+				queryPart := string(msg.Runes)
+				if strings.TrimSpace(queryPart) == "" {
+					return m, nil
+				}
+				now := time.Now()
+				if m.openTypeahead == "" || now.Sub(m.openTypeaheadAt) > 2*time.Second {
+					m.openTypeahead = queryPart
+				} else {
+					m.openTypeahead += queryPart
+				}
+				m.openTypeaheadAt = now
+				filtered := openFilteredIndices(m.openTypeahead, m.openBranches)
+				m.openSelected = ensureOpenSelectionVisible(m.openSelected, filtered)
+				if m.openSelected == 0 && len(filtered) > 0 {
+					m.openSelected = filtered[0] + 1
+				}
+				m.errMsg = ""
+				return m, nil
+			case tea.KeyBackspace, tea.KeyDelete:
+				if m.openTypeahead == "" {
+					return m, nil
+				}
+				r := []rune(m.openTypeahead)
+				if len(r) <= 1 {
+					m.openTypeahead = ""
+				} else {
+					m.openTypeahead = string(r[:len(r)-1])
+				}
+				m.openTypeaheadAt = time.Now()
+				filtered := openFilteredIndices(m.openTypeahead, m.openBranches)
+				m.openSelected = ensureOpenSelectionVisible(m.openSelected, filtered)
+				if strings.TrimSpace(m.openTypeahead) != "" && m.openSelected == 0 && len(filtered) > 0 {
+					m.openSelected = filtered[0] + 1
+				}
+				m.errMsg = ""
+				return m, nil
+			}
+			return m, nil
+		}
 		if m.mode == modeCreating {
 			switch msg.String() {
 			case "q", "ctrl+c":
@@ -326,7 +836,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 						m.errMsg = err.Error()
 						return m, nil
 					}
-					if err := m.mgr.CheckoutNewBranch(row.Path, branch, m.status.BaseRef); err != nil {
+					if err := m.mgr.CheckoutNewBranch(row.Path, branch, m.status.BaseRef, false); err != nil {
 						lock.Release()
 						m.errMsg = err.Error()
 						return m, nil
@@ -547,140 +1057,30 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 			return m, cmd
 		}
-		prevPage := m.viewPager.Page
-		updatedPager, pagerCmd := m.viewPager.Update(msg)
-		m.viewPager = updatedPager
-		if m.viewPager.Page != prevPage {
-			m.errMsg = ""
-			if m.viewPager.Page == prsPage {
-				repo := strings.TrimSpace(m.status.RepoRoot)
-				needPRList := repo != "" && repo != m.prListLoadedRepo && repo != m.prListFetchingRepo
-				if needPRList {
-					m.prListFetchingRepo = repo
-					return m, tea.Batch(
-						pagerCmd,
-						fetchGHDataCmd(m.orchestrator, m.status, m.ghFetchingKey, false, false, true, false),
-						m.ghSpinner.Tick,
-					)
-				}
-				return m, pagerCmd
-			}
-			m.prSearchActive = false
-			m.prSearchInput.Blur()
-			key := ghDataKeyForStatus(m.status)
-			if shouldFetchByBranch(m.viewPager.Page, key, m.ghLoadedKey, m.ghFetchingKey) {
-				m.ghFetchingKey = key
-				m.ghPendingByBranch = pendingBranchesByName(m.status)
-				force := m.forceGHRefresh
-				m.forceGHRefresh = false
-				return m, tea.Batch(
-					pagerCmd,
-					fetchGHDataCmd(m.orchestrator, m.status, key, force, true, false, false),
-					m.ghSpinner.Tick,
-				)
-			}
-			return m, pagerCmd
-		}
-		if m.viewPager.Page == prsPage {
-			if msg.String() == "/" {
-				m.prSearchActive = true
-				m.prSearchInput.Focus()
-				return m, nil
-			}
-			if m.prSearchActive {
-				if msg.Type == tea.KeyEsc {
-					if strings.TrimSpace(m.prSearchInput.Value()) != "" {
-						m.prSearchInput.SetValue("")
-						m.prIndex = 0
-						return m, nil
-					}
-					m.prSearchActive = false
-					m.prSearchInput.Blur()
-					return m, nil
-				}
-				if shouldHandlePRSearchInput(msg) {
-					var cmd tea.Cmd
-					m.prSearchInput, cmd = m.prSearchInput.Update(msg)
-					m.prIndex = clampPRIndex(m.prIndex, filteredPRs(m.prs, m.prSearchInput.Value()))
-					return m, cmd
-				}
-			}
-		}
 		switch msg.String() {
 		case "q", "ctrl+c":
 			return m, tea.Quit
 		case "r":
-			if m.viewPager.Page == prsPage {
-				repo := strings.TrimSpace(m.status.RepoRoot)
-				m.prListLoadedRepo = ""
-				m.prListFetchingRepo = ""
-				m.prListEnrichingRepo = ""
-				m.forcePREnrichRefresh = true
-				m.ghWarnMsg = ""
-				if repo == "" {
-					return m, fetchStatusCmd(m.orchestrator)
-				}
-				m.prListFetchingRepo = repo
-				return m, tea.Batch(
-					fetchGHDataCmd(m.orchestrator, m.status, m.ghFetchingKey, true, false, true, false),
-					m.ghSpinner.Tick,
-				)
-			}
 			// Force refresh on demand, including GH enrichment on next status update.
 			m.ghLoadedKey = ""
 			m.ghFetchingKey = ""
-			m.prListLoadedRepo = ""
-			m.prListFetchingRepo = ""
-			m.prListEnrichingRepo = ""
-			m.forcePREnrichRefresh = false
 			m.ghPendingByBranch = map[string]bool{}
 			m.ghDataByBranch = map[string]PRData{}
 			m.ghWarnMsg = ""
 			m.forceGHRefresh = true
 			return m, fetchStatusCmd(m.orchestrator)
 		case "up", "k":
-			if m.viewPager.Page == worktreePage {
-				if m.listIndex > 0 {
-					m.listIndex--
-				}
-			} else if m.prIndex > 0 {
-				m.prIndex--
+			if m.listIndex > 0 {
+				m.listIndex--
 			}
 			return m, nil
 		case "down", "j":
-			if m.viewPager.Page == worktreePage {
-				maxIndex := selectorRowCount(m.status) - 1
-				if m.listIndex < maxIndex {
-					m.listIndex++
-				}
-			} else {
-				maxIndex := len(filteredPRs(m.prs, m.prSearchInput.Value())) - 1
-				if m.prIndex < maxIndex {
-					m.prIndex++
-				}
+			maxIndex := selectorRowCount(m.status) - 1
+			if m.listIndex < maxIndex {
+				m.listIndex++
 			}
 			return m, nil
 		case "enter":
-			if m.viewPager.Page == prsPage {
-				pr, ok := selectedPR(filteredPRs(m.prs, m.prSearchInput.Value()), m.prIndex)
-				if !ok {
-					m.errMsg = "No PR selected."
-					return m, nil
-				}
-				if strings.TrimSpace(pr.URL) == "" {
-					m.errMsg = "No URL for selected PR."
-					return m, nil
-				}
-				if err := m.runner.OpenURL(pr.URL); err != nil {
-					m.errMsg = err.Error()
-					return m, nil
-				}
-				m.errMsg = ""
-				return m, nil
-			}
-			if m.viewPager.Page != worktreePage {
-				return m, nil
-			}
 			if isCreateRow(m.listIndex, m.status) {
 				m.mode = modeAction
 				m.actionCreate = true
@@ -706,9 +1106,6 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				return m, nil
 			}
 		case "s":
-			if m.viewPager.Page != worktreePage {
-				return m, nil
-			}
 			if row, ok := selectedWorktree(m.status, m.listIndex); ok {
 				if isOrphanedPath(m.status, row.Path) {
 					m.errMsg = "Cannot open shell for orphaned worktree."
@@ -723,9 +1120,6 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				return m, tea.Quit
 			}
 		case "d":
-			if m.viewPager.Page != worktreePage {
-				return m, nil
-			}
 			if row, ok := selectedWorktree(m.status, m.listIndex); ok {
 				if err := m.mgr.CanDeleteWorktree(row.Path); err != nil {
 					m.errMsg = err.Error()
@@ -738,23 +1132,6 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				return m, nil
 			}
 		case "p", "P":
-			if m.viewPager.Page == prsPage {
-				pr, ok := selectedPR(filteredPRs(m.prs, m.prSearchInput.Value()), m.prIndex)
-				if !ok {
-					m.errMsg = "No PR selected."
-					return m, nil
-				}
-				if strings.TrimSpace(pr.URL) == "" {
-					m.errMsg = "No URL for selected PR."
-					return m, nil
-				}
-				if err := m.runner.OpenURL(pr.URL); err != nil {
-					m.errMsg = err.Error()
-					return m, nil
-				}
-				m.errMsg = ""
-				return m, nil
-			}
 			if row, ok := selectedWorktree(m.status, m.listIndex); ok {
 				if strings.TrimSpace(row.PRURL) == "" {
 					m.errMsg = "No PR URL for selected worktree."
@@ -768,9 +1145,6 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				return m, nil
 			}
 		case "u":
-			if m.viewPager.Page != worktreePage {
-				return m, nil
-			}
 			if row, ok := selectedWorktree(m.status, m.listIndex); ok {
 				if isOrphanedPath(m.status, row.Path) {
 					m.errMsg = "Cannot unlock orphaned worktree."
@@ -796,28 +1170,19 @@ func syncTabTitleWithSelection(m model) {
 		setITermWTXTab()
 		return
 	}
-	if m.viewPager.Page == prsPage {
-		if pr, ok := selectedPR(filteredPRs(m.prs, m.prSearchInput.Value()), m.prIndex); ok {
-			setITermWTXBranchTab(pr.Branch)
-			return
-		}
-		setITermWTXTab()
-		return
-	}
 	if wt, ok := selectedWorktree(m.status, m.listIndex); ok {
 		setITermWTXBranchTab(wt.Branch)
 		return
 	}
 	setITermWTXTab()
 }
-
 func (m model) View() string {
 	var b strings.Builder
 	showTopBar := m.ready && m.status.InRepo && m.mode == modeList
 	if showTopBar {
 		b.WriteString(bannerStyle.Render("WTX"))
 		b.WriteString("  ")
-		b.WriteString(renderViewHeader(m.viewPager.Page))
+		b.WriteString(renderViewHeader())
 		b.WriteString("\n\n")
 	} else {
 		b.WriteString(bannerStyle.Render("WTX"))
@@ -846,6 +1211,11 @@ func (m model) View() string {
 		}
 		b.WriteString("\n")
 		b.WriteString("Press q to quit.\n")
+		return b.String()
+	}
+
+	if m.mode == modeOpen {
+		b.WriteString(renderOpenScreen(m))
 		return b.String()
 	}
 
@@ -928,19 +1298,8 @@ func (m model) View() string {
 		b.WriteString("\nAre you sure? (y/N)\n")
 		return b.String()
 	}
-	if m.viewPager.Page == prsPage {
-		initialPRLoading := strings.TrimSpace(m.prListFetchingRepo) != ""
-		enrichmentLoading := strings.TrimSpace(m.prListEnrichingRepo) != "" && !initialPRLoading
-		filtered := filteredPRs(m.prs, m.prSearchInput.Value())
-		if m.prSearchActive {
-			b.WriteString("Filter PRs (/):\n")
-			b.WriteString(inputStyle.Render(m.prSearchInput.View()))
-			b.WriteString("\n")
-		}
-		b.WriteString(baseStyle.Render(renderPRSelector(filtered, m.prIndex, initialPRLoading, m.ghSpinner.View(), enrichmentLoading)))
-	} else {
-		b.WriteString(baseStyle.Render(renderSelector(m.status, m.listIndex, m.ghPendingByBranch, m.ghSpinner.View())))
-	}
+
+	b.WriteString(baseStyle.Render(renderSelector(m.status, m.listIndex, m.ghPendingByBranch, m.ghSpinner.View())))
 	b.WriteString("\n")
 	if m.status.Err != nil {
 		b.WriteString(errorStyle.Render(fmt.Sprintf("Error: %v", m.status.Err)))
@@ -973,59 +1332,35 @@ func (m model) View() string {
 			b.WriteString("\n")
 		}
 	}
-	if m.viewPager.Page == worktreePage {
-		selectedPath := currentWorktreePath(m.status, m.listIndex)
-		if selectedPath != "" {
-			b.WriteString("\n")
-			b.WriteString(secondaryStyle.Render(selectedPath))
-			b.WriteString("\n")
-		}
+	selectedPath := currentWorktreePath(m.status, m.listIndex)
+	if selectedPath != "" {
+		b.WriteString("\n")
+		b.WriteString(secondaryStyle.Render(selectedPath))
+		b.WriteString("\n")
 	}
-	if m.viewPager.Page == prsPage {
-		if pr, ok := selectedPR(filteredPRs(m.prs, m.prSearchInput.Value()), m.prIndex); ok && strings.TrimSpace(pr.URL) != "" {
-			b.WriteString("\n")
-			b.WriteString(secondaryStyle.Render(pr.URL))
-			b.WriteString("\n")
-		}
-	}
+
 	b.WriteString("\n")
-	help := "Press ←/→ to switch views, r to refresh, q to quit."
-	if m.viewPager.Page == prsPage {
-		help = "Press / to search, up/down to select, enter or P to open URL, esc clears/exits search, ←/→ switch views, r refreshes, q quits."
-	} else if m.mode == modeCreating {
-		help = "Provisioning worktree..."
+	help := "Press r to refresh, q to quit."
+	if m.mode == modeCreating {
+		help = "Creating worktree..."
 	} else if isCreateRow(m.listIndex, m.status) {
-		help = "Press enter for actions, ←/→ to switch views, r to refresh, q to quit."
+		help = "Press enter for actions, r to refresh, q to quit."
 	} else if wt, ok := selectedWorktree(m.status, m.listIndex); ok {
 		prHint := ""
 		if strings.TrimSpace(wt.PRURL) != "" {
 			prHint = ", p to open PR"
 		}
 		if !wt.Available && !isOrphanedPath(m.status, wt.Path) {
-			help = "Press u to unlock, d to delete" + prHint + ", ←/→ to switch views, r to refresh, q to quit."
+			help = "Press u to unlock, d to delete" + prHint + ", r to refresh, q to quit."
 		} else {
-			help = "Press enter for actions, s for shell, d to delete" + prHint + ", ←/→ to switch views, r to refresh, q to quit."
+			help = "Press enter for actions, s for shell, d to delete" + prHint + ", r to refresh, q to quit."
 		}
 	}
 	b.WriteString(help + "\n")
 	return b.String()
 }
-
-func renderViewHeader(page int) string {
-	tabs := []string{
-		"Worktrees",
-		"PRs",
-	}
-	activeTabStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("252"))
-	inactiveTabStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("244"))
-	for i := range tabs {
-		if i == page {
-			tabs[i] = activeTabStyle.Render(tabs[i])
-		} else {
-			tabs[i] = inactiveTabStyle.Render(tabs[i])
-		}
-	}
-	return strings.Join(tabs, " | ") + "  " + subtleHintStyle.Render("← → change view")
+func renderViewHeader() string {
+	return lipgloss.NewStyle().Foreground(lipgloss.Color("252")).Render("Worktrees")
 }
 
 func renderCreateProgress(m model) string {
@@ -1049,126 +1384,9 @@ func renderCreateProgress(m model) string {
 	}
 	return fmt.Sprintf("Provisioning %s%s...", branchStyle.Render(branch), elapsed)
 }
-
-func renderPRSelector(prs []PRListData, cursor int, loading bool, loadingGlyph string, cellLoading bool) string {
-	rows := make([]uiview.PRRow, 0, len(prs))
-	for _, pr := range prs {
-		row := uiview.BuildPRRow(
-			pr.Number,
-			pr.Branch,
-			pr.Title,
-			pr.CICompleted,
-			pr.CITotal,
-			string(pr.CIState),
-			pr.CIFailingNames,
-			pr.ReviewApproved,
-			pr.ReviewRequired,
-			pr.ReviewKnown,
-			pr.UnresolvedComments,
-			pr.ResolvedComments,
-			pr.CommentThreadsTotal,
-			pr.CommentsKnown,
-			pr.Status,
-		)
-		if cellLoading {
-			row.CILabel = loadingGlyph
-			row.ApprovalLabel = loadingGlyph
-		}
-		rows = append(rows, row)
-	}
-	return uiview.RenderPRSelector(rows, cursor, loading, loadingGlyph, viewStyles())
-}
-
-func selectedPR(prs []PRListData, index int) (PRListData, bool) {
-	if index < 0 || index >= len(prs) {
-		return PRListData{}, false
-	}
-	return prs[index], true
-}
-
-func shouldHandlePRSearchInput(msg tea.KeyMsg) bool {
-	switch msg.Type {
-	case tea.KeyRunes, tea.KeySpace, tea.KeyBackspace, tea.KeyDelete:
-		return true
-	default:
-		return false
-	}
-}
-
-func filteredPRs(prs []PRListData, query string) []PRListData {
-	q := strings.TrimSpace(strings.ToLower(query))
-	if q == "" {
-		return prs
-	}
-	tokens := strings.Fields(q)
-	out := make([]PRListData, 0, len(prs))
-	for _, pr := range prs {
-		haystack := prSearchHaystack(pr)
-		matched := true
-		for _, token := range tokens {
-			if !fuzzyContains(haystack, token) {
-				matched = false
-				break
-			}
-		}
-		if matched {
-			out = append(out, pr)
-		}
-	}
-	return out
-}
-
-func prSearchHaystack(pr PRListData) string {
-	return strings.ToLower(strings.Join([]string{
-		fmt.Sprintf("%d", pr.Number),
-		fmt.Sprintf("#%d", pr.Number),
-		pr.Branch,
-		pr.Title,
-		pr.Status,
-		pr.ReviewDecision,
-		string(pr.CIState),
-		fmt.Sprintf("%d/%d", pr.CICompleted, pr.CITotal),
-		pr.CIFailingNames,
-		fmt.Sprintf("%d", pr.ResolvedComments),
-		fmt.Sprintf("%d", pr.CommentThreadsTotal),
-		pr.URL,
-	}, " "))
-}
-
-func fuzzyContains(haystack string, needle string) bool {
-	if needle == "" {
-		return true
-	}
-	if strings.Contains(haystack, needle) {
-		return true
-	}
-	h := []rune(haystack)
-	n := []rune(needle)
-	j := 0
-	for i := 0; i < len(h) && j < len(n); i++ {
-		if h[i] == n[j] {
-			j++
-		}
-	}
-	return j == len(n)
-}
-
-func clampPRIndex(index int, prs []PRListData) int {
-	if len(prs) == 0 {
-		return 0
-	}
-	if index < 0 {
-		return 0
-	}
-	if index >= len(prs) {
-		return len(prs) - 1
-	}
-	return index
-}
-
-func shouldFetchByBranch(page int, key string, loadedKey string, fetchingKey string) bool {
+func shouldFetchByBranch(key string, loadedKey string, fetchingKey string) bool {
 	key = strings.TrimSpace(key)
-	if page != worktreePage || key == "" {
+	if key == "" {
 		return false
 	}
 	return key != strings.TrimSpace(loadedKey) && key != strings.TrimSpace(fetchingKey)
@@ -1176,19 +1394,39 @@ func shouldFetchByBranch(page int, key string, loadedKey string, fetchingKey str
 
 type statusMsg WorktreeStatus
 type pollStatusTickMsg time.Time
+type openPickRefreshTickMsg time.Time
 type ghDataMsg struct {
-	repoRoot              string
-	key                   string
-	byBranch              map[string]PRData
-	prs                   []PRListData
-	fetchedByBranch       bool
-	fetchedPRList         bool
-	fetchedPRListEnriched bool
-	err                   error
+	repoRoot        string
+	key             string
+	byBranch        map[string]PRData
+	fetchedByBranch bool
+	err             error
 }
 type createWorktreeDoneMsg struct {
 	created WorktreeInfo
 	err     error
+}
+type openDeleteWorktreeDoneMsg struct {
+	path string
+	err  error
+}
+type openUnlockWorktreeDoneMsg struct {
+	path string
+	err  error
+}
+type openCreateWorktreeDoneMsg struct {
+	created WorktreeInfo
+	err     error
+}
+type openUseReadyMsg struct {
+	path      string
+	branch    string
+	lock      *WorktreeLock
+	openShell bool
+	err       error
+}
+type openDefaultsSavedMsg struct {
+	err error
 }
 
 func fetchStatusCmd(orchestrator *WorktreeOrchestrator) tea.Cmd {
@@ -1206,73 +1444,33 @@ func pollStatusTickCmd() tea.Cmd {
 	})
 }
 
-func fetchGHDataCmd(orchestrator *WorktreeOrchestrator, status WorktreeStatus, key string, force bool, includeByBranch bool, includePRList bool, includePRListEnriched bool) tea.Cmd {
+func openPickRefreshTickCmd() tea.Cmd {
+	return tea.Tick(2*time.Second, func(t time.Time) tea.Msg {
+		return openPickRefreshTickMsg(t)
+	})
+}
+
+func fetchGHDataCmd(orchestrator *WorktreeOrchestrator, status WorktreeStatus, key string, force bool) tea.Cmd {
 	return func() tea.Msg {
 		var byBranch map[string]PRData
-		var prs []PRListData
 		var byBranchErr error
-		var prListErr error
 		if orchestrator == nil {
-			if includeByBranch {
+			byBranch = map[string]PRData{}
+		} else {
+			byBranch, byBranchErr = orchestrator.PRDataForStatusWithError(status, force)
+			if byBranch == nil {
 				byBranch = map[string]PRData{}
 			}
-			if includePRList {
-				prs = []PRListData{}
-			}
-			if includePRListEnriched {
-				prs = []PRListData{}
-			}
-		} else {
-			var wg sync.WaitGroup
-			if includeByBranch {
-				wg.Add(1)
-				go func() {
-					defer wg.Done()
-					byBranch, byBranchErr = orchestrator.PRDataForStatusWithError(status, force)
-					if byBranch == nil {
-						byBranch = map[string]PRData{}
-					}
-				}()
-			}
-			if includePRList {
-				wg.Add(1)
-				go func() {
-					defer wg.Done()
-					prs, prListErr = orchestrator.PRsForStatusWithError(status, force, false)
-					if prs == nil {
-						prs = []PRListData{}
-					}
-				}()
-			}
-			if includePRListEnriched {
-				wg.Add(1)
-				go func() {
-					defer wg.Done()
-					prs, prListErr = orchestrator.PRsForStatusWithError(status, force, true)
-					if prs == nil {
-						prs = []PRListData{}
-					}
-				}()
-			}
-			wg.Wait()
-		}
-		err := byBranchErr
-		if err == nil {
-			err = prListErr
 		}
 		return ghDataMsg{
-			repoRoot:              status.RepoRoot,
-			key:                   key,
-			byBranch:              byBranch,
-			prs:                   prs,
-			fetchedByBranch:       includeByBranch,
-			fetchedPRList:         includePRList,
-			fetchedPRListEnriched: includePRListEnriched,
-			err:                   err,
+			repoRoot:        status.RepoRoot,
+			key:             key,
+			byBranch:        byBranch,
+			fetchedByBranch: true,
+			err:             byBranchErr,
 		}
 	}
 }
-
 func createWorktreeCmd(mgr *WorktreeManager, branch string, baseRef string) tea.Cmd {
 	return func() tea.Msg {
 		created, err := mgr.CreateWorktree(branch, baseRef)
@@ -1284,6 +1482,133 @@ func createWorktreeFromExistingCmd(mgr *WorktreeManager, branch string) tea.Cmd 
 	return func() tea.Msg {
 		created, err := mgr.CreateWorktreeFromBranch(branch)
 		return createWorktreeDoneMsg{created: created, err: err}
+	}
+}
+
+func deleteOpenWorktreeCmd(mgr *WorktreeManager, path string) tea.Cmd {
+	return func() tea.Msg {
+		if mgr == nil {
+			return openDeleteWorktreeDoneMsg{path: path, err: fmt.Errorf("worktree manager unavailable")}
+		}
+		err := mgr.DeleteWorktree(path, false)
+		return openDeleteWorktreeDoneMsg{path: path, err: err}
+	}
+}
+
+func unlockOpenWorktreeCmd(mgr *WorktreeManager, path string) tea.Cmd {
+	return func() tea.Msg {
+		if mgr == nil {
+			return openUnlockWorktreeDoneMsg{path: path, err: fmt.Errorf("worktree manager unavailable")}
+		}
+		err := mgr.UnlockWorktree(path)
+		return openUnlockWorktreeDoneMsg{path: path, err: err}
+	}
+}
+
+func createOpenWorktreeCmd(mgr *WorktreeManager, branch string, baseRef string) tea.Cmd {
+	return func() tea.Msg {
+		if mgr == nil {
+			return openCreateWorktreeDoneMsg{err: fmt.Errorf("worktree manager unavailable")}
+		}
+		created, err := mgr.CreateWorktree(branch, baseRef)
+		return openCreateWorktreeDoneMsg{created: created, err: err}
+	}
+}
+
+func useExistingWorktreeCmd(mgr *WorktreeManager, path string, branch string) tea.Cmd {
+	return func() tea.Msg {
+		lock, err := mgr.AcquireWorktreeLock(path)
+		if err != nil {
+			return openUseReadyMsg{err: err}
+		}
+		return openUseReadyMsg{path: path, branch: branch, lock: lock}
+	}
+}
+
+func checkoutExistingInWorktreeCmd(mgr *WorktreeManager, path string, branch string) tea.Cmd {
+	return func() tea.Msg {
+		lock, err := mgr.AcquireWorktreeLock(path)
+		if err != nil {
+			return openUseReadyMsg{err: err}
+		}
+		if err := mgr.CheckoutExistingBranch(path, branch); err != nil {
+			lock.Release()
+			return openUseReadyMsg{err: err}
+		}
+		return openUseReadyMsg{path: path, branch: branch, lock: lock}
+	}
+}
+
+func checkoutNewInWorktreeCmd(mgr *WorktreeManager, path string, branch string, baseRef string, doFetch bool) tea.Cmd {
+	return func() tea.Msg {
+		lock, err := mgr.AcquireWorktreeLock(path)
+		if err != nil {
+			return openUseReadyMsg{err: err}
+		}
+		if err := mgr.CheckoutNewBranch(path, branch, baseRef, doFetch); err != nil {
+			lock.Release()
+			return openUseReadyMsg{err: err}
+		}
+		return openUseReadyMsg{path: path, branch: branch, lock: lock}
+	}
+}
+
+func createAndUseExistingWorktreeCmd(mgr *WorktreeManager, branch string) tea.Cmd {
+	return func() tea.Msg {
+		created, err := mgr.CreateWorktreeFromBranch(branch)
+		if err != nil {
+			return openUseReadyMsg{err: err}
+		}
+		lock, err := mgr.AcquireWorktreeLock(created.Path)
+		if err != nil {
+			return openUseReadyMsg{err: err}
+		}
+		return openUseReadyMsg{path: created.Path, branch: branch, lock: lock}
+	}
+}
+
+func createAndUseNewWorktreeCmd(mgr *WorktreeManager, branch string, baseRef string, doFetch bool) tea.Cmd {
+	return func() tea.Msg {
+		if doFetch {
+			if err := mgr.FetchRepo(); err != nil {
+				return openUseReadyMsg{err: err}
+			}
+		}
+		created, err := mgr.CreateWorktree(branch, baseRef)
+		if err != nil {
+			return openUseReadyMsg{err: err}
+		}
+		lock, err := mgr.AcquireWorktreeLock(created.Path)
+		if err != nil {
+			return openUseReadyMsg{err: err}
+		}
+		return openUseReadyMsg{path: created.Path, branch: branch, lock: lock}
+	}
+}
+
+func saveOpenDefaultsCmd(baseRef string, fetch bool) tea.Cmd {
+	return func() tea.Msg {
+		cfg, err := LoadConfig()
+		if err != nil {
+			exists, exErr := ConfigExists()
+			if exErr != nil {
+				return openDefaultsSavedMsg{err: exErr}
+			}
+			if exists {
+				return openDefaultsSavedMsg{err: err}
+			}
+			cfg = Config{AgentCommand: defaultAgentCommand}
+		}
+		baseRef = strings.TrimSpace(baseRef)
+		if baseRef != "" {
+			cfg.NewBranchBaseRef = baseRef
+		}
+		v := fetch
+		cfg.NewBranchFetchFirst = &v
+		if err := SaveConfig(cfg); err != nil {
+			return openDefaultsSavedMsg{err: err}
+		}
+		return openDefaultsSavedMsg{}
 	}
 }
 
@@ -1347,7 +1672,6 @@ var (
 	branchStyle         = lipgloss.NewStyle().Foreground(lipgloss.Color("15")).Bold(true)
 	branchInlineStyle   = lipgloss.NewStyle().Bold(true)
 	warnStyle           = lipgloss.NewStyle().Foreground(lipgloss.Color("3")).Bold(true)
-	subtleHintStyle     = lipgloss.NewStyle().Foreground(lipgloss.Color("239"))
 	inputStyle          = lipgloss.NewStyle().
 				Padding(0, 1)
 )
@@ -1373,12 +1697,8 @@ func max(a int, b int) int {
 type uiMode int
 
 const (
-	worktreePage = 0
-	prsPage      = 1
-)
-
-const (
-	modeList uiMode = iota
+	modeOpen uiMode = iota
+	modeList
 	modeCreating
 	modeDelete
 	modeUnlock
@@ -1387,10 +1707,13 @@ const (
 	modeBranchPick
 )
 
-func newViewPager() paginator.Model {
-	p := paginator.New(paginator.WithTotalPages(2))
-	return p
-}
+type openStage int
+
+const (
+	openStageMain openStage = iota
+	openStageNewBranchConfig
+	openStagePickWorktree
+)
 
 func newBranchInput() textinput.Model {
 	ti := textinput.New()
@@ -1408,12 +1731,11 @@ func newCreateBranchInput() textinput.Model {
 	return ti
 }
 
-func newPRSearchInput() textinput.Model {
+func newBaseRefInput() textinput.Model {
 	ti := textinput.New()
-	ti.Placeholder = "fuzzy search by number, branch, title, status..."
+	ti.Placeholder = "origin/main"
 	ti.CharLimit = 200
-	ti.Width = 60
-	ti.Focus()
+	ti.Width = 40
 	return ti
 }
 
@@ -1857,6 +2179,56 @@ func clampListIndex(index int, status WorktreeStatus) int {
 		return maxIndex
 	}
 	return index
+}
+
+func clampOpenDebugIndex(index int, count int) int {
+	if count <= 0 {
+		return 0
+	}
+	if index < 0 {
+		return 0
+	}
+	if index >= count {
+		return count - 1
+	}
+	return index
+}
+
+func selectedOpenDebugSlot(slots []openSlotState, index int) (openSlotState, bool) {
+	if index < 0 || index >= len(slots) {
+		return openSlotState{}, false
+	}
+	return slots[index], true
+}
+
+func openCmdForTargetOnSlot(m model, slot openSlotState) tea.Cmd {
+	if m.openTargetIsNew {
+		return checkoutNewInWorktreeCmd(m.mgr, slot.Path, m.openTargetBranch, m.openTargetBaseRef, m.openTargetFetch)
+	}
+	if strings.TrimSpace(slot.Branch) == strings.TrimSpace(m.openTargetBranch) {
+		return useExistingWorktreeCmd(m.mgr, slot.Path, m.openTargetBranch)
+	}
+	return checkoutExistingInWorktreeCmd(m.mgr, slot.Path, m.openTargetBranch)
+}
+
+func openCmdForCreateTarget(m model) tea.Cmd {
+	if m.openTargetIsNew {
+		return createAndUseNewWorktreeCmd(m.mgr, m.openTargetBranch, m.openTargetBaseRef, m.openTargetFetch)
+	}
+	return createAndUseExistingWorktreeCmd(m.mgr, m.openTargetBranch)
+}
+
+func findOpenSlotByPath(slots []openSlotState, path string) (openSlotState, bool) {
+	needle := strings.TrimSpace(path)
+	if needle == "" {
+		return openSlotState{}, false
+	}
+	for _, slot := range slots {
+		if strings.TrimSpace(slot.Path) == needle {
+			return slot, true
+		}
+	}
+	return openSlotState{}, false
 }
 
 func newSpinner() spinner.Model {

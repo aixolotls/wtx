@@ -79,15 +79,16 @@ func (o *WorktreeOrchestrator) PRDataForStatusWithError(status WorktreeStatus, f
 	return o.prMgr.PRDataByBranch(status.RepoRoot, branches)
 }
 
-func (o *WorktreeOrchestrator) PRsForStatusWithError(status WorktreeStatus, force bool, enriched bool) ([]PRListData, error) {
+func (o *WorktreeOrchestrator) PRDataForBranchesWithError(repoRoot string, branches []string, force bool) (map[string]PRData, error) {
 	if o == nil || o.prMgr == nil {
-		return []PRListData{}, nil
+		return map[string]PRData{}, nil
 	}
-	if !status.InRepo || strings.TrimSpace(status.RepoRoot) == "" {
-		return []PRListData{}, nil
+	repoRoot = strings.TrimSpace(repoRoot)
+	if repoRoot == "" {
+		return map[string]PRData{}, nil
 	}
-	if enriched {
-		return o.prMgr.PRsEnriched(status.RepoRoot, force)
+	if force {
+		return o.prMgr.PRDataByBranchForce(repoRoot, branches)
 	}
-	return o.prMgr.PRs(status.RepoRoot, force)
+	return o.prMgr.PRDataByBranch(repoRoot, branches)
 }
