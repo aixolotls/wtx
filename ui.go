@@ -554,10 +554,6 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					m.openTargetFetch = !m.openTargetFetch
 					return m, nil
 				case "enter":
-					if m.openLoading {
-						m.errMsg = "Still loading startup state; cannot continue yet."
-						return m, nil
-					}
 					branch := strings.TrimSpace(m.newBranchInput.Value())
 					if branch == "" {
 						m.errMsg = "Branch name required."
@@ -734,10 +730,6 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					m.openTypeahead = ""
 					m.newBranchInput.Focus()
 					m.errMsg = ""
-					return m, nil
-				}
-				if m.openLoading {
-					m.errMsg = "Still loading startup state; selection is disabled."
 					return m, nil
 				}
 				index := m.openSelected - 1
