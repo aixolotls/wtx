@@ -11,6 +11,7 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 	uiview "github.com/mrbonezy/wtx/ui"
+	"github.com/muesli/termenv"
 )
 
 type model struct {
@@ -1897,7 +1898,11 @@ func formatPRLabel(wt WorktreeInfo, pending bool, loadingGlyph string) string {
 	if !wt.HasPR || wt.PRNumber <= 0 {
 		return "-"
 	}
-	return fmt.Sprintf("#%d", wt.PRNumber)
+	label := fmt.Sprintf("#%d", wt.PRNumber)
+	if strings.TrimSpace(wt.PRURL) != "" {
+		return termenv.Hyperlink(wt.PRURL, label)
+	}
+	return label
 }
 
 func formatPRStatusLabel(wt WorktreeInfo, pending bool, loadingGlyph string) string {

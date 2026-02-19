@@ -9,11 +9,13 @@ import (
 	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/muesli/termenv"
 )
 
 type openBranchOption struct {
 	Name      string
 	PRNumber  int
+	PRURL     string
 	HasPR     bool
 	PRLoading bool
 }
@@ -187,9 +189,11 @@ func applyPRDataToOpenState(branches *[]openBranchOption, lockedBranches *[]open
 			(*branches)[i].PRLoading = false
 			(*branches)[i].HasPR = false
 			(*branches)[i].PRNumber = 0
+			(*branches)[i].PRURL = ""
 			if pr, ok := byBranch[b]; ok && pr.Number > 0 {
 				(*branches)[i].HasPR = true
 				(*branches)[i].PRNumber = pr.Number
+				(*branches)[i].PRURL = pr.URL
 			}
 		}
 	}
@@ -199,9 +203,11 @@ func applyPRDataToOpenState(branches *[]openBranchOption, lockedBranches *[]open
 			(*lockedBranches)[i].PRLoading = false
 			(*lockedBranches)[i].HasPR = false
 			(*lockedBranches)[i].PRNumber = 0
+			(*lockedBranches)[i].PRURL = ""
 			if pr, ok := byBranch[b]; ok && pr.Number > 0 {
 				(*lockedBranches)[i].HasPR = true
 				(*lockedBranches)[i].PRNumber = pr.Number
+				(*lockedBranches)[i].PRURL = pr.URL
 			}
 		}
 	}
@@ -434,6 +440,9 @@ func renderOpenScreen(m model) string {
 			pr = m.ghSpinner.View()
 		} else if branch.HasPR && branch.PRNumber > 0 {
 			pr = fmt.Sprintf("#%d", branch.PRNumber)
+			if strings.TrimSpace(branch.PRURL) != "" {
+				pr = termenv.Hyperlink(branch.PRURL, pr)
+			}
 		}
 		line := fmt.Sprintf("%s%-40s %s", cursor, branch.Name, pr)
 		if m.openSelected == branchIndex+1 {
@@ -461,6 +470,9 @@ func renderOpenScreen(m model) string {
 				pr = m.ghSpinner.View()
 			} else if branch.HasPR && branch.PRNumber > 0 {
 				pr = fmt.Sprintf("#%d", branch.PRNumber)
+				if strings.TrimSpace(branch.PRURL) != "" {
+					pr = termenv.Hyperlink(branch.PRURL, pr)
+				}
 			}
 			line := fmt.Sprintf("  %-40s %s", branch.Name, pr)
 			b.WriteString(secondaryStyle.Render(line) + "\n")

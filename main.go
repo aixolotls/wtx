@@ -19,7 +19,7 @@ func run(args []string) error {
 	if len(args) > 1 {
 		switch args[1] {
 		case "config":
-			p := tea.NewProgram(newConfigModel())
+			p := tea.NewProgram(newConfigModel(), tea.WithMouseCellMotion())
 			return p.Start()
 		case "tmux-status":
 			return runTmuxStatus(args[2:])
@@ -64,7 +64,7 @@ func run(args []string) error {
 		}
 	}()
 
-	p := tea.NewProgram(newModel())
+	p := tea.NewProgram(newModel(), tea.WithMouseCellMotion())
 	finalModel, err := p.Run()
 	if err != nil {
 		return err
