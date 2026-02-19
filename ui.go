@@ -83,8 +83,10 @@ type model struct {
 	openDefaultBaseRef    string
 	openDefaultFetch      bool
 	openBaseRefInput      textinput.Model
-	openAskBaseDefault    bool
-	openAskFetchDefault   bool
+	openAskBaseDefault      bool
+	openAskFetchDefault     bool
+	openCreating            bool
+	openCreatingStartedAt   time.Time
 }
 
 func (m model) PendingWorktree() (string, string, bool, *WorktreeLock) {
@@ -119,7 +121,7 @@ func newModel() model {
 }
 
 func (m model) Init() tea.Cmd {
-	return tea.Batch(loadOpenScreenCmd(m.orchestrator, m.mgr), m.ghSpinner.Tick)
+	return tea.Batch(loadOpenScreenCmd(m.orchestrator, m.mgr), m.ghSpinner.Tick, pollGHTickCmd(), pollStatusTickCmd())
 }
 
 func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
@@ -228,6 +230,8 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.newBranchInput.SetValue("")
 		return m, tea.Batch(loadOpenScreenCmd(m.orchestrator, m.mgr), m.ghSpinner.Tick)
 	case openUseReadyMsg:
+		m.openCreating = false
+		m.openCreatingStartedAt = time.Time{}
 		if msg.err != nil {
 			m.errMsg = msg.err.Error()
 			return m, nil
@@ -267,19 +271,22 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.ghWarnMsg = ""
 			return m, nil
 		}
-		if key == m.ghLoadedKey || key == m.ghFetchingKey {
-			applyPRDataToStatus(&m.status, m.ghDataByBranch)
+		applyPRDataToStatus(&m.status, m.ghDataByBranch)
+		return m, nil
+	case pollGHTickMsg:
+		if m.mode != modeList && m.mode != modeOpen {
+			return m, pollGHTickCmd()
 		}
-		if !shouldFetchByBranch(key, m.ghLoadedKey, m.ghFetchingKey) {
-			// Local status polling runs every second; avoid re-fetching GH unless needed.
-			return m, nil
+		key := ghDataKeyForStatus(m.status)
+		if key == "" || key == m.ghFetchingKey {
+			return m, pollGHTickCmd()
 		}
 		m.ghFetchingKey = key
 		m.ghPendingByBranch = pendingBranchesByName(m.status)
 		force := m.forceGHRefresh
 		m.forceGHRefresh = false
 		cmd := fetchGHDataCmd(m.orchestrator, m.status, key, force)
-		return m, tea.Batch(cmd, m.ghSpinner.Tick)
+		return m, tea.Batch(cmd, m.ghSpinner.Tick, pollGHTickCmd())
 	case ghDataMsg:
 		if strings.TrimSpace(msg.repoRoot) == "" || strings.TrimSpace(m.status.RepoRoot) == "" {
 			return m, nil
@@ -305,6 +312,9 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case pollStatusTickMsg:
 		if m.mode == modeList {
 			return m, tea.Batch(fetchStatusCmd(m.orchestrator), pollStatusTickCmd())
+		}
+		if m.mode == modeOpen && !m.openCreating && m.openStage == openStageMain && !m.openEnteringNew && !m.openShowDebug && strings.TrimSpace(m.openTypeahead) == "" {
+			return m, tea.Batch(loadOpenScreenCmd(m.orchestrator, m.mgr), pollStatusTickCmd())
 		}
 		return m, pollStatusTickCmd()
 	case openPickRefreshTickMsg:
@@ -338,6 +348,13 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if m.mode == modeOpen && m.openLoading {
 			var cmd tea.Cmd
 			m.ghSpinner, cmd = m.ghSpinner.Update(msg)
+			if cmd != nil {
+				cmds = append(cmds, cmd)
+			}
+		}
+		if m.mode == modeOpen && m.openCreating {
+			var cmd tea.Cmd
+			m.spinner, cmd = m.spinner.Update(msg)
 			if cmd != nil {
 				cmds = append(cmds, cmd)
 			}
@@ -507,10 +524,14 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					}
 					// If both prompts are resolved, continue with selection attempt.
 					if reusable, ok := findReusableOpenSlot(m.openSlots, m.openTargetBranch); ok {
-						return m, tea.Batch(saveCmd, useExistingWorktreeCmd(m.mgr, reusable.Path, m.openTargetBranch))
+						m.openCreating = true
+						m.openCreatingStartedAt = time.Now()
+						return m, tea.Batch(saveCmd, m.spinner.Tick, useExistingWorktreeCmd(m.mgr, reusable.Path, m.openTargetBranch))
 					}
 					if available, ok := findAnyAvailableOpenSlot(m.openSlots); ok {
-						return m, tea.Batch(saveCmd, checkoutNewInWorktreeCmd(m.mgr, available.Path, m.openTargetBranch, m.openTargetBaseRef, m.openTargetFetch))
+						m.openCreating = true
+						m.openCreatingStartedAt = time.Now()
+						return m, tea.Batch(saveCmd, m.spinner.Tick, checkoutNewInWorktreeCmd(m.mgr, available.Path, m.openTargetBranch, m.openTargetBaseRef, m.openTargetFetch))
 					}
 					m.openStage = openStagePickWorktree
 					m.openPickIndex = 0
@@ -560,10 +581,14 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 						return m, nil
 					}
 					if reusable, ok := findReusableOpenSlot(m.openSlots, m.openTargetBranch); ok {
-						return m, useExistingWorktreeCmd(m.mgr, reusable.Path, m.openTargetBranch)
+						m.openCreating = true
+						m.openCreatingStartedAt = time.Now()
+						return m, tea.Batch(m.spinner.Tick, useExistingWorktreeCmd(m.mgr, reusable.Path, m.openTargetBranch))
 					}
 					if available, ok := findAnyAvailableOpenSlot(m.openSlots); ok {
-						return m, checkoutNewInWorktreeCmd(m.mgr, available.Path, m.openTargetBranch, m.openTargetBaseRef, m.openTargetFetch)
+						m.openCreating = true
+						m.openCreatingStartedAt = time.Now()
+						return m, tea.Batch(m.spinner.Tick, checkoutNewInWorktreeCmd(m.mgr, available.Path, m.openTargetBranch, m.openTargetBaseRef, m.openTargetFetch))
 					}
 					m.openStage = openStagePickWorktree
 					m.openPickIndex = 0
@@ -595,7 +620,9 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 							return m, tea.Quit
 						}
 						if slot, ok := findOpenSlotByPath(m.openSlots, path); ok {
-							return m, openCmdForTargetOnSlot(m, slot)
+							m.openCreating = true
+							m.openCreatingStartedAt = time.Now()
+							return m, tea.Batch(m.spinner.Tick, openCmdForTargetOnSlot(m, slot))
 						}
 						m.openLoading = true
 						return m, tea.Batch(loadOpenScreenCmd(m.orchestrator, m.mgr), openPickRefreshTickCmd(), m.ghSpinner.Tick)
@@ -624,7 +651,9 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					return m, nil
 				case "enter":
 					if m.openPickIndex == 0 {
-						return m, openCmdForCreateTarget(m)
+						m.openCreating = true
+						m.openCreatingStartedAt = time.Now()
+						return m, tea.Batch(m.spinner.Tick, openCmdForCreateTarget(m))
 					}
 					slot, ok := selectedOpenDebugSlot(m.openSlots, m.openPickIndex-1)
 					if !ok {
@@ -645,7 +674,9 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 						m.pendingLock = nil
 						return m, tea.Quit
 					}
-					return m, openCmdForTargetOnSlot(m, slot)
+					m.openCreating = true
+					m.openCreatingStartedAt = time.Now()
+					return m, tea.Batch(m.spinner.Tick, openCmdForTargetOnSlot(m, slot))
 				}
 				return m, nil
 			}
@@ -723,10 +754,14 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.openTargetBaseRef = ""
 				m.openTargetFetch = false
 				if reusable, ok := findReusableOpenSlot(m.openSlots, branch); ok {
-					return m, useExistingWorktreeCmd(m.mgr, reusable.Path, branch)
+					m.openCreating = true
+					m.openCreatingStartedAt = time.Now()
+					return m, tea.Batch(m.spinner.Tick, useExistingWorktreeCmd(m.mgr, reusable.Path, branch))
 				}
 				if available, ok := findAnyAvailableOpenSlot(m.openSlots); ok {
-					return m, checkoutExistingInWorktreeCmd(m.mgr, available.Path, branch)
+					m.openCreating = true
+					m.openCreatingStartedAt = time.Now()
+					return m, tea.Batch(m.spinner.Tick, checkoutExistingInWorktreeCmd(m.mgr, available.Path, branch))
 				}
 				m.openStage = openStagePickWorktree
 				m.openPickIndex = 0
@@ -1412,6 +1447,7 @@ func shouldFetchByBranch(key string, loadedKey string, fetchingKey string) bool 
 
 type statusMsg WorktreeStatus
 type pollStatusTickMsg time.Time
+type pollGHTickMsg time.Time
 type openPickRefreshTickMsg time.Time
 type ghDataMsg struct {
 	repoRoot        string
@@ -1457,8 +1493,14 @@ func fetchStatusCmd(orchestrator *WorktreeOrchestrator) tea.Cmd {
 }
 
 func pollStatusTickCmd() tea.Cmd {
-	return tea.Tick(time.Second, func(t time.Time) tea.Msg {
+	return tea.Tick(2*time.Second, func(t time.Time) tea.Msg {
 		return pollStatusTickMsg(t)
+	})
+}
+
+func pollGHTickCmd() tea.Cmd {
+	return tea.Tick(5*time.Second, func(t time.Time) tea.Msg {
+		return pollGHTickMsg(t)
 	})
 }
 

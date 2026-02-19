@@ -18,8 +18,8 @@ func main() {
 func run(args []string) error {
 	if len(args) > 1 {
 		switch args[1] {
-		case "init":
-			p := tea.NewProgram(newInitModel())
+		case "config":
+			p := tea.NewProgram(newConfigModel())
 			return p.Start()
 		case "tmux-status":
 			return runTmuxStatus(args[2:])
@@ -29,6 +29,10 @@ func run(args []string) error {
 			return runTmuxAgentStart(args[2:])
 		case "tmux-agent-exit":
 			return runTmuxAgentExit(args[2:])
+		case "shell":
+			return runShell()
+		case "ide":
+			return runIDE(args[2:])
 		default:
 			return fmt.Errorf("unknown command: %s", args[1])
 		}
@@ -47,7 +51,7 @@ func run(args []string) error {
 		return err
 	}
 	if !exists {
-		return fmt.Errorf("wtx not initialized. run: wtx init")
+		return fmt.Errorf("wtx not configured. run: wtx config")
 	}
 
 	setITermWTXTab()

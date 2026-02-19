@@ -8,42 +8,117 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 )
 
-type initModel struct {
-	input textinput.Model
-	err   string
-	done  bool
+type configField int
+
+const (
+	fieldAgent configField = iota
+	fieldDefaultBranch
+	fieldDefaultFetch
+	fieldIDECommand
+	fieldCount
+)
+
+type configModel struct {
+	inputs      []textinput.Model
+	fetchToggle bool
+	focused     configField
+	err         string
+	done        bool
 }
 
-func newInitModel() initModel {
-	ti := textinput.New()
-	current := defaultAgentCommand
-	if cfg, err := LoadConfig(); err == nil && strings.TrimSpace(cfg.AgentCommand) != "" {
-		current = cfg.AgentCommand
+func newConfigModel() configModel {
+	inputs := make([]textinput.Model, fieldCount)
+
+	var cfg Config
+	if loaded, err := LoadConfig(); err == nil {
+		cfg = loaded
 	}
-	ti.Placeholder = defaultAgentCommand
-	ti.SetValue(current)
-	ti.CharLimit = 200
-	ti.Width = 40
-	ti.Focus()
-	return initModel{input: ti}
+
+	agentInput := textinput.New()
+	agentInput.Placeholder = defaultAgentCommand
+	agentValue := defaultAgentCommand
+	if strings.TrimSpace(cfg.AgentCommand) != "" {
+		agentValue = cfg.AgentCommand
+	}
+	agentInput.SetValue(agentValue)
+	agentInput.CharLimit = 200
+	agentInput.Width = 40
+	agentInput.Focus()
+	inputs[fieldAgent] = agentInput
+
+	branchInput := textinput.New()
+	branchInput.Placeholder = "origin/main"
+	if strings.TrimSpace(cfg.NewBranchBaseRef) != "" {
+		branchInput.SetValue(cfg.NewBranchBaseRef)
+	}
+	branchInput.CharLimit = 200
+	branchInput.Width = 40
+	inputs[fieldDefaultBranch] = branchInput
+
+	fetchInput := textinput.New()
+	inputs[fieldDefaultFetch] = fetchInput
+
+	ideInput := textinput.New()
+	ideInput.Placeholder = defaultIDECommand
+	ideValue := defaultIDECommand
+	if strings.TrimSpace(cfg.IDECommand) != "" {
+		ideValue = cfg.IDECommand
+	}
+	ideInput.SetValue(ideValue)
+	ideInput.CharLimit = 200
+	ideInput.Width = 40
+	inputs[fieldIDECommand] = ideInput
+
+	fetchToggle := true
+	if cfg.NewBranchFetchFirst != nil {
+		fetchToggle = *cfg.NewBranchFetchFirst
+	}
+
+	return configModel{
+		inputs:      inputs,
+		fetchToggle: fetchToggle,
+		focused:     fieldAgent,
+	}
 }
 
-func (m initModel) Init() tea.Cmd {
+func (m configModel) Init() tea.Cmd {
 	return tea.Batch(tea.ExitAltScreen, tea.ClearScreen)
 }
 
-func (m initModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
+func (m configModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
 	case tea.KeyMsg:
 		switch msg.String() {
 		case "ctrl+c", "esc":
 			return m, tea.Quit
-		case "enter":
-			value := strings.TrimSpace(m.input.Value())
-			if value == "" {
-				value = defaultAgentCommand
+		case "tab", "down":
+			m.inputs[m.focused].Blur()
+			m.focused++
+			if m.focused >= fieldCount {
+				m.focused = 0
 			}
-			if err := SaveConfig(Config{AgentCommand: value}); err != nil {
+			if m.focused != fieldDefaultFetch {
+				m.inputs[m.focused].Focus()
+			}
+			return m, nil
+		case "shift+tab", "up":
+			m.inputs[m.focused].Blur()
+			if m.focused == 0 {
+				m.focused = fieldCount - 1
+			} else {
+				m.focused--
+			}
+			if m.focused != fieldDefaultFetch {
+				m.inputs[m.focused].Focus()
+			}
+			return m, nil
+		case " ":
+			if m.focused == fieldDefaultFetch {
+				m.fetchToggle = !m.fetchToggle
+				return m, nil
+			}
+		case "enter":
+			if err := m.save(); err != nil {
 				m.err = err.Error()
 				return m, nil
 			}
@@ -51,26 +126,77 @@ func (m initModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, tea.Quit
 		}
 	}
-	var cmd tea.Cmd
-	m.input, cmd = m.input.Update(msg)
-	return m, cmd
+
+	if m.focused != fieldDefaultFetch {
+		var cmd tea.Cmd
+		m.inputs[m.focused], cmd = m.inputs[m.focused].Update(msg)
+		return m, cmd
+	}
+	return m, nil
 }
 
-func (m initModel) View() string {
+func (m configModel) save() error {
+	agent := strings.TrimSpace(m.inputs[fieldAgent].Value())
+	if agent == "" {
+		agent = defaultAgentCommand
+	}
+
+	branch := strings.TrimSpace(m.inputs[fieldDefaultBranch].Value())
+
+	ide := strings.TrimSpace(m.inputs[fieldIDECommand].Value())
+	if ide == "" {
+		ide = defaultIDECommand
+	}
+
+	cfg := Config{
+		AgentCommand:        agent,
+		NewBranchBaseRef:    branch,
+		NewBranchFetchFirst: &m.fetchToggle,
+		IDECommand:          ide,
+	}
+	return SaveConfig(cfg)
+}
+
+func (m configModel) View() string {
 	if m.done {
 		return ""
 	}
 	var b strings.Builder
-	b.WriteString(bannerStyle.Render("WTX"))
+	b.WriteString(bannerStyle.Render("WTX Config"))
 	b.WriteString("\n\n")
-	b.WriteString("AI agent command when selecting a worktree:\n")
-	b.WriteString(inputStyle.Render(m.input.View()))
+
+	b.WriteString(m.renderField(fieldAgent, "Agent command:", m.inputs[fieldAgent].View()))
+	b.WriteString(m.renderField(fieldDefaultBranch, "Default branch:", m.inputs[fieldDefaultBranch].View()))
+	b.WriteString(m.renderFetchField())
+	b.WriteString(m.renderField(fieldIDECommand, "IDE command:", m.inputs[fieldIDECommand].View()))
+
 	b.WriteString("\n")
-	b.WriteString("Press enter to save, esc to cancel.\n")
+	b.WriteString("Use tab/shift+tab to navigate, space to toggle, enter to save, esc to cancel.\n")
+
 	if m.err != "" {
 		b.WriteString("\n")
 		b.WriteString(errorStyle.Render(fmt.Sprintf("Error: %s", m.err)))
 		b.WriteString("\n")
 	}
 	return b.String()
+}
+
+func (m configModel) renderField(field configField, label string, inputView string) string {
+	cursor := "  "
+	if m.focused == field {
+		cursor = "> "
+	}
+	return fmt.Sprintf("%s%s\n  %s\n", cursor, label, inputStyle.Render(inputView))
+}
+
+func (m configModel) renderFetchField() string {
+	cursor := "  "
+	if m.focused == fieldDefaultFetch {
+		cursor = "> "
+	}
+	checked := "x"
+	if !m.fetchToggle {
+		checked = " "
+	}
+	return fmt.Sprintf("%sFetch before create: [%s]\n", cursor, checked)
 }
