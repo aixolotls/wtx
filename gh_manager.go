@@ -131,6 +131,15 @@ type ghPullReview struct {
 	} `json:"user"`
 }
 
+type requiredChecksInfo struct {
+	reviewCount      int
+	reviewKnown      bool
+	ciRequired       bool
+	ciKnown          bool
+	commentsRequired bool
+	commentsKnown    bool
+}
+
 func NewGHManager() *GHManager {
 	return &GHManager{
 		branchCache: make(map[string]map[string]cachedBranchPRData),
@@ -431,7 +440,7 @@ func ensureRequiredAtLeastApproved(approvedCount int, approvedKnown bool, requir
 	return requiredCount, requiredKnown
 }
 
-func requiredApprovalsForBaseBranch(ghPath string, repoRoot string, owner string, name string, baseRefName string) (int, bool, error) {
+func requiredChecksForBaseBranch(ghPath string, repoRoot string, owner string, name string, baseRefName string) (requiredChecksInfo, error) {
 	endpoint := fmt.Sprintf("repos/%s/%s/branches/%s/protection", owner, name, url.PathEscape(baseRefName))
 	ctx, cancel := context.WithTimeout(context.Background(), ghProtectionTimeout)
 	defer cancel()

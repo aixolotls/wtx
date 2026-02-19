@@ -36,6 +36,9 @@ type model struct {
 	errMsg                string
 	warnMsg               string
 	creatingBranch        string
+	creatingBaseRef       string
+	creatingExisting      bool
+	creatingStartedAt     time.Time
 	deletePath            string
 	deleteBranch          string
 	unlockPath            string
@@ -833,7 +836,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 						m.errMsg = err.Error()
 						return m, nil
 					}
-					if err := m.mgr.CheckoutNewBranch(row.Path, branch, m.status.BaseRef); err != nil {
+					if err := m.mgr.CheckoutNewBranch(row.Path, branch, m.status.BaseRef, false); err != nil {
 						lock.Release()
 						m.errMsg = err.Error()
 						return m, nil
@@ -1358,6 +1361,28 @@ func (m model) View() string {
 }
 func renderViewHeader() string {
 	return lipgloss.NewStyle().Foreground(lipgloss.Color("252")).Render("Worktrees")
+}
+
+func renderCreateProgress(m model) string {
+	branch := strings.TrimSpace(m.creatingBranch)
+	if branch == "" {
+		branch = "branch"
+	}
+	elapsed := ""
+	if !m.creatingStartedAt.IsZero() {
+		elapsed = fmt.Sprintf(" (%ds)", int(time.Since(m.creatingStartedAt).Seconds()))
+	}
+	if m.creatingExisting {
+		return fmt.Sprintf("Provisioning worktree for %s%s...", branchStyle.Render(branch), elapsed)
+	}
+	base := strings.TrimSpace(m.creatingBaseRef)
+	if base == "" {
+		base = strings.TrimSpace(m.status.BaseRef)
+	}
+	if base != "" {
+		return fmt.Sprintf("Provisioning %s from %s%s...", branchStyle.Render(branch), branchInlineStyle.Render(base), elapsed)
+	}
+	return fmt.Sprintf("Provisioning %s%s...", branchStyle.Render(branch), elapsed)
 }
 func shouldFetchByBranch(key string, loadedKey string, fetchingKey string) bool {
 	key = strings.TrimSpace(key)
