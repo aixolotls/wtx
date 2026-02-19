@@ -235,6 +235,8 @@ func ensureWTXSessionDefaults() {
 	}
 	// Ensure session dies when terminal client closes, so pane-backed locks do not linger.
 	tmuxSetOption(sessionID, "destroy-unattached", "on")
+	// Enable mouse support for clickable hyperlinks and scrolling.
+	tmuxSetOption(sessionID, "mouse", "on")
 	// Preserve modified key chords (for example Shift+Enter in coding agents) inside wtx-managed tmux sessions.
 	tmuxSetWindowOption(sessionID, "xterm-keys", "on")
 	tmuxSetGlobalWindowOption("xterm-keys", "on")

@@ -1,6 +1,10 @@
 package ui
 
-import "strings"
+import (
+	"strings"
+
+	"github.com/charmbracelet/lipgloss"
+)
 
 type Styles struct {
 	Header           func(string) string
@@ -15,15 +19,43 @@ func PadOrTrim(s string, width int) string {
 	if width <= 0 {
 		return ""
 	}
-	r := []rune(s)
-	if len(r) > width {
+	visibleWidth := lipgloss.Width(s)
+	if visibleWidth > width {
 		if width <= 3 {
-			return string(r[:width])
+			return truncateToWidth(s, width)
 		}
-		return string(r[:width-3]) + "..."
+		return truncateToWidth(s, width-3) + "..."
 	}
-	if len(r) < width {
-		return s + strings.Repeat(" ", width-len(r))
+	if visibleWidth < width {
+		return s + strings.Repeat(" ", width-visibleWidth)
 	}
 	return s
+}
+
+func truncateToWidth(s string, maxWidth int) string {
+	var result strings.Builder
+	currentWidth := 0
+	runes := []rune(s)
+	i := 0
+	for i < len(runes) {
+		if runes[i] == '\x1b' {
+			start := i
+			for i < len(runes) && runes[i] != 'm' && runes[i] != '\\' {
+				i++
+			}
+			if i < len(runes) {
+				i++
+			}
+			result.WriteString(string(runes[start:i]))
+			continue
+		}
+		runeWidth := lipgloss.Width(string(runes[i]))
+		if currentWidth+runeWidth > maxWidth {
+			break
+		}
+		result.WriteRune(runes[i])
+		currentWidth += runeWidth
+		i++
+	}
+	return result.String()
 }

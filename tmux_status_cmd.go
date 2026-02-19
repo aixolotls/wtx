@@ -181,20 +181,7 @@ func prLabel(pr PRData) string {
 }
 
 func prLabelWithURL(pr PRData) string {
-	if pr.Number <= 0 {
-		return "-"
-	}
-	url := strings.TrimSpace(pr.URL)
-	if url == "" {
-		return prLabel(pr)
-	}
-	status := strings.TrimSpace(strings.ToLower(pr.Status))
-	switch status {
-	case "open", "closed", "merged":
-		return fmt.Sprintf("%s (%s)", url, status)
-	default:
-		return url
-	}
+	return prLabel(pr)
 }
 
 func ciLabel(pr PRData) string {

@@ -5,6 +5,7 @@ import "strings"
 type WorktreeRow struct {
 	BranchLabel     string
 	PRLabel         string
+	PRURL           string
 	CILabel         string
 	ReviewLabel     string
 	CommentsLabel   string
