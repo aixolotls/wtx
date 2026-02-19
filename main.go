@@ -33,6 +33,8 @@ func run(args []string) error {
 			return runShell()
 		case "ide":
 			return runIDE(args[2:])
+		case "ide-picker":
+			return runIDEPicker(args[2:])
 		default:
 			return fmt.Errorf("unknown command: %s", args[1])
 		}

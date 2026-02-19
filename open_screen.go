@@ -490,11 +490,7 @@ func renderOpenScreen(m model) string {
 	}
 
 	b.WriteString("\n")
-	if m.openLoading {
-		b.WriteString("Loading in progress. Use up/down to browse. Selection is disabled. Ctrl+R refreshes. Ctrl+D debug. q quits.\n")
-	} else {
-		b.WriteString("Use up/down or type to search by branch/PR. Enter selects. Ctrl+R refreshes. Ctrl+D debug. q quits.\n")
-	}
+	b.WriteString("Use up/down or type to search by branch/PR. Enter selects. Ctrl+R refreshes. Ctrl+D debug. q quits.\n")
 	return b.String()
 }
 

@@ -5,6 +5,7 @@ import (
 	"os"
 	"os/exec"
 	"strings"
+	"syscall"
 )
 
 func runShell() error {
@@ -41,7 +42,9 @@ func runIDE(args []string) error {
 	targetPath = strings.TrimSuffix(targetPath, "/")
 
 	cmd := exec.Command(ideCmd, targetPath)
-	cmd.Stdout = os.Stdout
-	cmd.Stderr = os.Stderr
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	cmd.Stdin = nil
+	cmd.Stdout = nil
+	cmd.Stderr = nil
 	return cmd.Start()
 }
