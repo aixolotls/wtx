@@ -14,43 +14,60 @@ import (
 )
 
 type model struct {
-	mgr               *WorktreeManager
-	orchestrator      *WorktreeOrchestrator
-	runner            *Runner
-	status            WorktreeStatus
-	listIndex         int
-	ready             bool
-	width             int
-	height            int
-	mode              uiMode
-	branchInput       textinput.Model
-	newBranchInput    textinput.Model
-	spinner           spinner.Model
-	ghSpinner         spinner.Model
-	ghPendingByBranch map[string]bool
-	ghDataByBranch    map[string]PRData
-	ghLoadedKey       string
-	ghFetchingKey     string
-	forceGHRefresh    bool
-	ghWarnMsg         string
-	errMsg            string
-	warnMsg           string
-	creatingBranch    string
-	deletePath        string
-	deleteBranch      string
-	unlockPath        string
-	unlockBranch      string
-	actionBranch      string
-	actionIndex       int
-	actionCreate      bool
-	branchOptions     []string
-	branchSuggestions []string
-	branchIndex       int
-	pendingPath       string
-	pendingBranch     string
-	pendingOpenShell  bool
-	pendingLock       *WorktreeLock
-	autoActionPath    string
+	mgr                *WorktreeManager
+	orchestrator       *WorktreeOrchestrator
+	runner             *Runner
+	status             WorktreeStatus
+	listIndex          int
+	ready              bool
+	width              int
+	height             int
+	mode               uiMode
+	branchInput        textinput.Model
+	newBranchInput     textinput.Model
+	spinner            spinner.Model
+	ghSpinner          spinner.Model
+	ghPendingByBranch  map[string]bool
+	ghDataByBranch     map[string]PRData
+	ghLoadedKey        string
+	ghFetchingKey      string
+	forceGHRefresh     bool
+	ghWarnMsg          string
+	errMsg             string
+	warnMsg            string
+	creatingBranch     string
+	deletePath         string
+	deleteBranch       string
+	unlockPath         string
+	unlockBranch       string
+	actionBranch       string
+	actionIndex        int
+	actionCreate       bool
+	branchOptions      []string
+	branchSuggestions  []string
+	branchIndex        int
+	pendingPath        string
+	pendingBranch      string
+	pendingOpenShell   bool
+	pendingLock        *WorktreeLock
+	autoActionPath     string
+	openLoading        bool
+	openLoadErr        string
+	openSelected       int
+	openEnteringNew    bool
+	openTypeahead      string
+	openTypeaheadAt    time.Time
+	openBranches       []openBranchOption
+	openLockedBranches []openBranchOption
+	openSlots          []openSlotState
+	openPRBranches     []string
+	openFetchID        string
+	openShowDebug      bool
+	openDebugIndex     int
+	openDebugCreating  bool
+	openConfirmAction  string
+	openConfirmPath    string
+	openConfirmBranch  string
 }
 
 func (m model) PendingWorktree() (string, string, bool, *WorktreeLock) {
@@ -68,11 +85,14 @@ func newModel() model {
 	m.ghSpinner = newGHSpinner()
 	m.ghPendingByBranch = map[string]bool{}
 	m.ghDataByBranch = map[string]PRData{}
+	m.mode = modeOpen
+	m.openSelected = 0
+	m.newBranchInput.Focus()
 	return m
 }
 
 func (m model) Init() tea.Cmd {
-	return tea.Batch(fetchStatusCmd(m.orchestrator), pollStatusTickCmd())
+	return tea.Batch(loadOpenScreenCmd(m.orchestrator, m.mgr), m.ghSpinner.Tick)
 }
 
 func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
@@ -80,6 +100,78 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		syncTabTitleWithSelection(m)
 	}()
 	switch msg := msg.(type) {
+	case openScreenLoadedMsg:
+		m.ready = true
+		m.status = msg.status
+		m.openLoadErr = ""
+		m.errMsg = ""
+		if msg.err != nil {
+			m.openLoading = false
+			m.openBranches = nil
+			m.openSlots = nil
+			m.openPRBranches = nil
+			m.openLoadErr = msg.err.Error()
+			return m, nil
+		}
+		m.openBranches = msg.branches
+		m.openLockedBranches = msg.lockedBranches
+		m.openSlots = msg.slots
+		m.openPRBranches = msg.prBranches
+		m.openEnteringNew = false
+		m.openTypeahead = ""
+		m.openDebugIndex = clampOpenDebugIndex(m.openDebugIndex, len(msg.slots))
+		m.openDebugCreating = false
+		m.openConfirmAction = ""
+		m.openConfirmPath = ""
+		m.openConfirmBranch = ""
+		m.openSelected = clampOpenSelection(m.openSelected, len(m.openBranches))
+		m.newBranchInput.Blur()
+		m.openFetchID = msg.fetchID
+		m.openLoading = true
+		if len(m.openPRBranches) == 0 {
+			m.openLoading = false
+			return m, nil
+		}
+		return m, tea.Batch(fetchOpenPRDataCmd(m.orchestrator, m.status.RepoRoot, m.openPRBranches, msg.fetchID), m.ghSpinner.Tick)
+	case openScreenPRDataMsg:
+		if strings.TrimSpace(msg.fetchID) == "" || msg.fetchID != m.openFetchID {
+			return m, nil
+		}
+		m.openLoading = false
+		if msg.err != nil {
+			m.openLoadErr = msg.err.Error()
+			return m, nil
+		}
+		m.openLoadErr = ""
+		applyPRDataToOpenState(&m.openBranches, &m.openLockedBranches, &m.openSlots, msg.byBranch)
+		return m, nil
+	case openDeleteWorktreeDoneMsg:
+		if msg.err != nil {
+			m.errMsg = msg.err.Error()
+			return m, nil
+		}
+		m.errMsg = ""
+		m.openLoading = true
+		return m, tea.Batch(loadOpenScreenCmd(m.orchestrator, m.mgr), m.ghSpinner.Tick)
+	case openUnlockWorktreeDoneMsg:
+		if msg.err != nil {
+			m.errMsg = msg.err.Error()
+			return m, nil
+		}
+		m.errMsg = ""
+		m.openLoading = true
+		return m, tea.Batch(loadOpenScreenCmd(m.orchestrator, m.mgr), m.ghSpinner.Tick)
+	case openCreateWorktreeDoneMsg:
+		if msg.err != nil {
+			m.errMsg = msg.err.Error()
+			return m, nil
+		}
+		m.errMsg = ""
+		m.openLoading = true
+		m.openDebugCreating = false
+		m.newBranchInput.Blur()
+		m.newBranchInput.SetValue("")
+		return m, tea.Batch(loadOpenScreenCmd(m.orchestrator, m.mgr), m.ghSpinner.Tick)
 	case statusMsg:
 		m.status = WorktreeStatus(msg)
 		m.listIndex = clampListIndex(m.listIndex, m.status)
@@ -163,6 +255,13 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				cmds = append(cmds, cmd)
 			}
 		}
+		if m.mode == modeOpen && m.openLoading {
+			var cmd tea.Cmd
+			m.ghSpinner, cmd = m.ghSpinner.Update(msg)
+			if cmd != nil {
+				cmds = append(cmds, cmd)
+			}
+		}
 		if len(m.ghPendingByBranch) > 0 {
 			var cmd tea.Cmd
 			m.ghSpinner, cmd = m.ghSpinner.Update(msg)
@@ -179,6 +278,219 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.height = msg.Height
 		return m, nil
 	case tea.KeyMsg:
+		if m.mode == modeOpen {
+			switch msg.String() {
+			case "q", "ctrl+c":
+				return m, tea.Quit
+			case "ctrl+d":
+				m.openShowDebug = !m.openShowDebug
+				m.openDebugIndex = clampOpenDebugIndex(m.openDebugIndex, len(m.openSlots))
+				return m, nil
+			}
+			if m.openShowDebug {
+				if m.openConfirmAction != "" {
+					switch msg.String() {
+					case "y", "Y":
+						action := m.openConfirmAction
+						path := m.openConfirmPath
+						m.openConfirmAction = ""
+						m.openConfirmPath = ""
+						m.openConfirmBranch = ""
+						if action == "delete" {
+							return m, deleteOpenWorktreeCmd(m.mgr, path)
+						}
+						if action == "unlock" {
+							return m, unlockOpenWorktreeCmd(m.mgr, path)
+						}
+						return m, nil
+					case "n", "N", "esc":
+						m.openConfirmAction = ""
+						m.openConfirmPath = ""
+						m.openConfirmBranch = ""
+						return m, nil
+					}
+					return m, nil
+				}
+				if m.openDebugCreating {
+					switch msg.String() {
+					case "enter":
+						branch := strings.TrimSpace(m.newBranchInput.Value())
+						if branch == "" {
+							m.errMsg = "Branch name required."
+							return m, nil
+						}
+						m.errMsg = ""
+						return m, createOpenWorktreeCmd(m.mgr, branch, m.status.BaseRef)
+					case "esc":
+						m.openDebugCreating = false
+						m.newBranchInput.Blur()
+						m.newBranchInput.SetValue("")
+						m.errMsg = ""
+						return m, nil
+					}
+					var cmd tea.Cmd
+					m.newBranchInput, cmd = m.newBranchInput.Update(msg)
+					return m, cmd
+				}
+				switch msg.String() {
+				case "esc":
+					m.openShowDebug = false
+					return m, nil
+				case "up", "k":
+					m.openDebugIndex = clampOpenDebugIndex(m.openDebugIndex-1, len(m.openSlots))
+					return m, nil
+				case "down", "j":
+					m.openDebugIndex = clampOpenDebugIndex(m.openDebugIndex+1, len(m.openSlots))
+					return m, nil
+				case "d":
+					slot, ok := selectedOpenDebugSlot(m.openSlots, m.openDebugIndex)
+					if !ok {
+						m.errMsg = "No worktree selected in debug list."
+						return m, nil
+					}
+					if slot.Locked {
+						m.errMsg = "Cannot remove a worktree that is in use. Unlock it first."
+						return m, nil
+					}
+					if slot.Dirty {
+						m.errMsg = "Cannot remove an unclean worktree."
+						return m, nil
+					}
+					m.openConfirmAction = "delete"
+					m.openConfirmPath = slot.Path
+					m.openConfirmBranch = slot.Branch
+					m.errMsg = ""
+					return m, nil
+				case "u":
+					slot, ok := selectedOpenDebugSlot(m.openSlots, m.openDebugIndex)
+					if !ok {
+						m.errMsg = "No worktree selected in debug list."
+						return m, nil
+					}
+					if !slot.Locked {
+						m.errMsg = "Worktree is not in use."
+						return m, nil
+					}
+					m.openConfirmAction = "unlock"
+					m.openConfirmPath = slot.Path
+					m.openConfirmBranch = slot.Branch
+					m.errMsg = ""
+					return m, nil
+				case "n":
+					m.openDebugCreating = true
+					m.newBranchInput.SetValue("")
+					m.newBranchInput.Focus()
+					m.errMsg = ""
+					return m, nil
+				case "ctrl+r":
+					m.openLoading = true
+					m.openLoadErr = ""
+					m.openTypeahead = ""
+					return m, tea.Batch(loadOpenScreenCmd(m.orchestrator, m.mgr), m.ghSpinner.Tick)
+				}
+				return m, nil
+			}
+			if msg.String() == "ctrl+r" {
+				m.openLoading = true
+				m.openLoadErr = ""
+				m.openEnteringNew = false
+				m.openTypeahead = ""
+				m.newBranchInput.Blur()
+				return m, tea.Batch(loadOpenScreenCmd(m.orchestrator, m.mgr), m.ghSpinner.Tick)
+			}
+			if m.openEnteringNew {
+				switch msg.String() {
+				case "enter":
+					if m.openLoading {
+						m.errMsg = "Still loading startup state; cannot continue yet."
+						return m, nil
+					}
+					if strings.TrimSpace(m.newBranchInput.Value()) == "" {
+						m.errMsg = "Branch name required."
+						return m, nil
+					}
+					m.errMsg = "Selection flow not implemented yet."
+					return m, nil
+				case "esc":
+					m.openEnteringNew = false
+					m.newBranchInput.Blur()
+					m.newBranchInput.SetValue("")
+					m.errMsg = ""
+					return m, nil
+				}
+				var cmd tea.Cmd
+				m.newBranchInput, cmd = m.newBranchInput.Update(msg)
+				return m, cmd
+			}
+			switch msg.String() {
+			case "up", "k":
+				filtered := openFilteredIndices(m.openTypeahead, m.openBranches)
+				m.openSelected = moveOpenSelection(m.openSelected, -1, filtered)
+				m.openTypeahead = ""
+				return m, nil
+			case "down", "j":
+				filtered := openFilteredIndices(m.openTypeahead, m.openBranches)
+				m.openSelected = moveOpenSelection(m.openSelected, 1, filtered)
+				m.openTypeahead = ""
+				return m, nil
+			case "enter":
+				if m.openSelected == 0 {
+					m.openEnteringNew = true
+					m.openTypeahead = ""
+					m.newBranchInput.Focus()
+					m.errMsg = ""
+					return m, nil
+				}
+				if m.openLoading {
+					m.errMsg = "Still loading startup state; selection is disabled."
+					return m, nil
+				}
+				m.errMsg = "Selection flow not implemented yet."
+				return m, nil
+			case "esc":
+				return m, nil
+			}
+			switch msg.Type {
+			case tea.KeyRunes:
+				queryPart := string(msg.Runes)
+				if strings.TrimSpace(queryPart) == "" {
+					return m, nil
+				}
+				now := time.Now()
+				if m.openTypeahead == "" || now.Sub(m.openTypeaheadAt) > 2*time.Second {
+					m.openTypeahead = queryPart
+				} else {
+					m.openTypeahead += queryPart
+				}
+				m.openTypeaheadAt = now
+				filtered := openFilteredIndices(m.openTypeahead, m.openBranches)
+				m.openSelected = ensureOpenSelectionVisible(m.openSelected, filtered)
+				if m.openSelected == 0 && len(filtered) > 0 {
+					m.openSelected = filtered[0] + 1
+				}
+				m.errMsg = ""
+				return m, nil
+			case tea.KeyBackspace, tea.KeyDelete:
+				if m.openTypeahead == "" {
+					return m, nil
+				}
+				r := []rune(m.openTypeahead)
+				if len(r) <= 1 {
+					m.openTypeahead = ""
+				} else {
+					m.openTypeahead = string(r[:len(r)-1])
+				}
+				m.openTypeaheadAt = time.Now()
+				filtered := openFilteredIndices(m.openTypeahead, m.openBranches)
+				m.openSelected = ensureOpenSelectionVisible(m.openSelected, filtered)
+				if strings.TrimSpace(m.openTypeahead) != "" && m.openSelected == 0 && len(filtered) > 0 {
+					m.openSelected = filtered[0] + 1
+				}
+				m.errMsg = ""
+				return m, nil
+			}
+			return m, nil
+		}
 		if m.mode == modeCreating {
 			switch msg.String() {
 			case "q", "ctrl+c":
@@ -604,6 +916,11 @@ func (m model) View() string {
 		return b.String()
 	}
 
+	if m.mode == modeOpen {
+		b.WriteString(renderOpenScreen(m))
+		return b.String()
+	}
+
 	if m.mode == modeAction {
 		title := "Worktree actions:"
 		if m.actionCreate {
@@ -768,6 +1085,18 @@ type createWorktreeDoneMsg struct {
 	created WorktreeInfo
 	err     error
 }
+type openDeleteWorktreeDoneMsg struct {
+	path string
+	err  error
+}
+type openUnlockWorktreeDoneMsg struct {
+	path string
+	err  error
+}
+type openCreateWorktreeDoneMsg struct {
+	created WorktreeInfo
+	err     error
+}
 
 func fetchStatusCmd(orchestrator *WorktreeOrchestrator) tea.Cmd {
 	return func() tea.Msg {
@@ -816,6 +1145,36 @@ func createWorktreeFromExistingCmd(mgr *WorktreeManager, branch string) tea.Cmd 
 	return func() tea.Msg {
 		created, err := mgr.CreateWorktreeFromBranch(branch)
 		return createWorktreeDoneMsg{created: created, err: err}
+	}
+}
+
+func deleteOpenWorktreeCmd(mgr *WorktreeManager, path string) tea.Cmd {
+	return func() tea.Msg {
+		if mgr == nil {
+			return openDeleteWorktreeDoneMsg{path: path, err: fmt.Errorf("worktree manager unavailable")}
+		}
+		err := mgr.DeleteWorktree(path, false)
+		return openDeleteWorktreeDoneMsg{path: path, err: err}
+	}
+}
+
+func unlockOpenWorktreeCmd(mgr *WorktreeManager, path string) tea.Cmd {
+	return func() tea.Msg {
+		if mgr == nil {
+			return openUnlockWorktreeDoneMsg{path: path, err: fmt.Errorf("worktree manager unavailable")}
+		}
+		err := mgr.UnlockWorktree(path)
+		return openUnlockWorktreeDoneMsg{path: path, err: err}
+	}
+}
+
+func createOpenWorktreeCmd(mgr *WorktreeManager, branch string, baseRef string) tea.Cmd {
+	return func() tea.Msg {
+		if mgr == nil {
+			return openCreateWorktreeDoneMsg{err: fmt.Errorf("worktree manager unavailable")}
+		}
+		created, err := mgr.CreateWorktree(branch, baseRef)
+		return openCreateWorktreeDoneMsg{created: created, err: err}
 	}
 }
 
@@ -904,7 +1263,8 @@ func max(a int, b int) int {
 type uiMode int
 
 const (
-	modeList uiMode = iota
+	modeOpen uiMode = iota
+	modeList
 	modeCreating
 	modeDelete
 	modeUnlock
@@ -1369,6 +1729,26 @@ func clampListIndex(index int, status WorktreeStatus) int {
 		return maxIndex
 	}
 	return index
+}
+
+func clampOpenDebugIndex(index int, count int) int {
+	if count <= 0 {
+		return 0
+	}
+	if index < 0 {
+		return 0
+	}
+	if index >= count {
+		return count - 1
+	}
+	return index
+}
+
+func selectedOpenDebugSlot(slots []openSlotState, index int) (openSlotState, bool) {
+	if index < 0 || index >= len(slots) {
+		return openSlotState{}, false
+	}
+	return slots[index], true
 }
 
 func newSpinner() spinner.Model {
