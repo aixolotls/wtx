@@ -1,12 +1,8 @@
 package main
 
 import (
-	"encoding/json"
-	"errors"
 	"fmt"
-	"os"
 	"os/exec"
-	"path/filepath"
 	"sort"
 	"strings"
 	"sync"
@@ -236,6 +232,24 @@ func clampOpenSelection(index int, branchCount int) int {
 
 func renderOpenScreen(m model) string {
 	var b strings.Builder
+	if m.openCreating {
+		elapsed := ""
+		if !m.openCreatingStartedAt.IsZero() {
+			elapsed = fmt.Sprintf(" (%ds)", int(time.Since(m.openCreatingStartedAt).Seconds()))
+		}
+		branch := strings.TrimSpace(m.openTargetBranch)
+		if branch == "" {
+			branch = "branch"
+		}
+		b.WriteString(m.spinner.View())
+		b.WriteString(" ")
+		if m.openTargetIsNew && strings.TrimSpace(m.openTargetBaseRef) != "" {
+			b.WriteString(fmt.Sprintf("Creating %s from %s%s...\n", branch, m.openTargetBaseRef, elapsed))
+		} else {
+			b.WriteString(fmt.Sprintf("Switching to %s%s...\n", branch, elapsed))
+		}
+		return b.String()
+	}
 	if m.openShowDebug {
 		b.WriteString("Worktrees debug:\n")
 		b.WriteString(secondaryStyle.Render(fmt.Sprintf("  %-12s %-24s %s", "State", "Branch", "Path")) + "\n")
@@ -618,62 +632,10 @@ func worktreeLockedByAny(orchestrator *WorktreeOrchestrator, repoRoot string, wo
 	if orchestrator == nil || orchestrator.lockMgr == nil {
 		return false, nil
 	}
-	lockPath, err := orchestrator.lockMgr.lockPath(repoRoot, worktreePath)
+	available, err := orchestrator.lockMgr.IsAvailable(repoRoot, worktreePath)
 	if err != nil {
 		return false, err
 	}
-	_, err = os.Stat(lockPath)
-	if err != nil {
-		if !errors.Is(err, os.ErrNotExist) {
-			return false, err
-		}
-		legacyLocked, lerr := legacyLockExistsForWorktree(repoRoot, worktreePath)
-		if lerr != nil {
-			return false, lerr
-		}
-		return legacyLocked, nil
-	}
-	// For branch-pick filtering we hide worktrees as soon as a lock file exists.
-	// Unlock handling is done in dedicated flows.
-	return true, nil
+	return !available, nil
 }
 
-type lockPayloadMeta struct {
-	RepoRoot     string `json:"repo_root"`
-	WorktreePath string `json:"worktree_path"`
-}
-
-func legacyLockExistsForWorktree(repoRoot string, worktreePath string) (bool, error) {
-	home := strings.TrimSpace(os.Getenv("HOME"))
-	if home == "" {
-		return false, errors.New("HOME not set")
-	}
-	lockDir := filepath.Join(home, ".wtx", "locks")
-	entries, err := os.ReadDir(lockDir)
-	if err != nil {
-		if errors.Is(err, os.ErrNotExist) {
-			return false, nil
-		}
-		return false, err
-	}
-	wantRepo := strings.TrimSpace(repoRoot)
-	wantPath := strings.TrimSpace(worktreePath)
-	for _, entry := range entries {
-		if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".lock") {
-			continue
-		}
-		lockFile := filepath.Join(lockDir, entry.Name())
-		data, rerr := os.ReadFile(lockFile)
-		if rerr != nil {
-			continue
-		}
-		var meta lockPayloadMeta
-		if jerr := json.Unmarshal(data, &meta); jerr != nil {
-			continue
-		}
-		if strings.TrimSpace(meta.RepoRoot) == wantRepo && strings.TrimSpace(meta.WorktreePath) == wantPath {
-			return true, nil
-		}
-	}
-	return false, nil
-}

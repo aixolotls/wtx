@@ -184,50 +184,6 @@ func (m *LockManager) ForceUnlock(repoRoot string, worktreePath string) error {
 	if err := os.Remove(lockPath); err != nil && !errors.Is(err, os.ErrNotExist) {
 		return err
 	}
-	if err := m.removeLegacyLocksForWorktree(repoRoot, worktreePath); err != nil {
-		return err
-	}
-	return nil
-}
-
-func (m *LockManager) removeLegacyLocksForWorktree(repoRoot string, worktreePath string) error {
-	home := strings.TrimSpace(os.Getenv("HOME"))
-	if home == "" {
-		return errors.New("HOME not set")
-	}
-	lockDir := filepath.Join(home, ".wtx", "locks")
-	entries, err := os.ReadDir(lockDir)
-	if err != nil {
-		if errors.Is(err, os.ErrNotExist) {
-			return nil
-		}
-		return err
-	}
-	targetRepo := strings.TrimSpace(repoRoot)
-	targetPath := strings.TrimSpace(worktreePath)
-	for _, entry := range entries {
-		if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".lock") {
-			continue
-		}
-		path := filepath.Join(lockDir, entry.Name())
-		data, rerr := os.ReadFile(path)
-		if rerr != nil {
-			continue
-		}
-		var meta struct {
-			RepoRoot     string `json:"repo_root"`
-			WorktreePath string `json:"worktree_path"`
-		}
-		if jerr := json.Unmarshal(data, &meta); jerr != nil {
-			continue
-		}
-		if strings.TrimSpace(meta.RepoRoot) != targetRepo || strings.TrimSpace(meta.WorktreePath) != targetPath {
-			continue
-		}
-		if err := os.Remove(path); err != nil && !errors.Is(err, os.ErrNotExist) {
-			return err
-		}
-	}
 	return nil
 }
 

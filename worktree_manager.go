@@ -157,30 +157,22 @@ func (m *WorktreeManager) ListLocalBranchesByRecentUse() ([]string, error) {
 		return nil, err
 	}
 
-	output, err := commandOutputInDir(repoRoot, gitPath, "reflog", "show", "--format=%gs")
+	output, err := commandOutputInDir(repoRoot, gitPath, "for-each-ref",
+		"--sort=-committerdate",
+		"--format=%(refname:short)",
+		"refs/heads/",
+		"--count", fmt.Sprintf("%d", maxRecentBranches))
 	if err != nil {
 		return nil, err
 	}
 
-	seen := make(map[string]bool)
 	branches := make([]string, 0, maxRecentBranches)
 	for _, line := range strings.Split(string(output), "\n") {
-		if !strings.HasPrefix(line, "checkout: ") {
+		name := strings.TrimSpace(line)
+		if name == "" {
 			continue
 		}
-		idx := strings.LastIndex(line, " to ")
-		if idx == -1 {
-			continue
-		}
-		name := strings.TrimSpace(line[idx+4:])
-		if name == "" || strings.HasPrefix(name, "origin/") || seen[name] {
-			continue
-		}
-		seen[name] = true
 		branches = append(branches, name)
-		if len(branches) >= maxRecentBranches {
-			break
-		}
 	}
 	return branches, nil
 }

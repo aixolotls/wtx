@@ -190,6 +190,8 @@ func setDynamicWorktreeStatus(worktreePath string) {
 	cmd := "#(" + shellQuote(bin) + " tmux-status --worktree " + shellQuote(worktreePath) + ")"
 	configureTmuxStatus(sessionID, "300", tmuxStatusIntervalSeconds)
 	tmuxSetOption(sessionID, "status-left", " "+cmd+" ")
+	tmuxSetOption(sessionID, "status-right", " ^S shell | ^A ide ")
+	tmuxSetOption(sessionID, "status-right-length", "30")
 	titleCmd := "#(" + shellQuote(bin) + " tmux-title --worktree " + shellQuote(worktreePath) + ")"
 	tmuxSetOption(sessionID, "set-titles", "on")
 	tmuxSetOption(sessionID, "set-titles-string", titleCmd)
@@ -240,13 +242,24 @@ func ensureWTXSessionDefaults() {
 	tmuxSetServerOption("extended-keys-format", "csi-u")
 	tmuxAppendServerOption("terminal-features", ",*:extkeys")
 	tmuxAppendGlobalOption("terminal-features", ",*:extkeys")
+
+	// Bind ctrl+s to split and open shell in current pane's directory
+	// Bind ctrl+a to prompt for optional subpath and open IDE
+	wtxBin := resolveAgentLifecycleBinary()
+	if strings.TrimSpace(wtxBin) != "" {
+		// Use split-window directly for shell (faster, no need to resolve path)
+		_ = exec.Command("tmux", "bind-key", "-n", "C-s", "split-window", "-v", "-p", "50", "-c", "#{pane_current_path}").Run()
+		// For IDE, use command-prompt to ask for optional subpath
+		ideCmd := fmt.Sprintf("run-shell -b '%s ide #{pane_current_path}/%%1'", strings.ReplaceAll(wtxBin, "'", "'\\''"))
+		_ = exec.Command("tmux", "bind-key", "-n", "C-a", "command-prompt", "-p", "subpath (optional):", ideCmd).Run()
+	}
 }
 
 func configureTmuxStatus(sessionID string, leftLength string, interval string) {
 	tmuxSetOption(sessionID, "status", "1")
 	tmuxSetOption(sessionID, "status-position", "bottom")
 	tmuxSetOption(sessionID, "status-justify", "left")
-	tmuxSetOption(sessionID, "status-style", "fg=#FFF7DB,bg=#7D56F4")
+	tmuxSetOption(sessionID, "status-style", "fg=#d0d0d0,bg=#3d2a5c")
 	tmuxSetOption(sessionID, "status-left-length", leftLength)
 	tmuxSetOption(sessionID, "status-right", "")
 	interval = strings.TrimSpace(interval)
@@ -296,6 +309,20 @@ func tmuxAppendGlobalOption(key string, value string) {
 		return
 	}
 	_ = exec.Command("tmux", "set-option", "-g", "-as", "-q", key, value).Run()
+}
+
+func tmuxBindKey(sessionID string, key string, command string) {
+	if strings.TrimSpace(sessionID) == "" || strings.TrimSpace(key) == "" || strings.TrimSpace(command) == "" {
+		return
+	}
+	_ = exec.Command("tmux", "bind-key", "-t", sessionID, key, "run-shell", command).Run()
+}
+
+func tmuxBindKeyGlobal(key string, command string) {
+	if strings.TrimSpace(key) == "" || strings.TrimSpace(command) == "" {
+		return
+	}
+	_ = exec.Command("tmux", "bind-key", "-n", key, "run-shell", command).Run()
 }
 
 func resolveStatusCommandBinary() string {

@@ -86,15 +86,15 @@ func currentBranchInWorktree(worktreePath string) string {
 func ghSummaryForBranchCached(worktreePath string, branch string) string {
 	branch = strings.TrimSpace(branch)
 	if branch == "" {
-		return "GH: PR - | CI - | Review -"
+		return "PR - | CI - | Review -"
 	}
 	gitPath, err := gitPath()
 	if err != nil {
-		return "GH: PR - | CI - | Review -"
+		return "PR - | CI - | Review -"
 	}
 	repoRoot, err := repoRootForDir(worktreePath, gitPath)
 	if err != nil {
-		return "GH: PR - | CI - | Review -"
+		return "PR - | CI - | Review -"
 	}
 	if summary, ok := readCachedGHSummary(repoRoot, branch); ok {
 		return summary
@@ -108,9 +108,9 @@ func ghSummaryForRepoBranch(repoRoot string, branch string) string {
 	data, _ := NewGHManager().PRDataByBranch(repoRoot, []string{branch})
 	pr, ok := data[branch]
 	if !ok {
-		return "GH: PR - | CI - | Review -"
+		return "PR - | CI - | Review -"
 	}
-	return "GH: PR " + prLabel(pr) + " | CI " + ciLabel(pr) + " | Review " + reviewLabel(pr)
+	return "PR " + prLabelWithURL(pr) + " | CI " + ciLabel(pr) + " | Review " + reviewLabel(pr)
 }
 
 func readCachedGHSummary(repoRoot string, branch string) (string, bool) {
@@ -177,6 +177,23 @@ func prLabel(pr PRData) string {
 		return fmt.Sprintf("#%d(%s)", pr.Number, status)
 	default:
 		return fmt.Sprintf("#%d", pr.Number)
+	}
+}
+
+func prLabelWithURL(pr PRData) string {
+	if pr.Number <= 0 {
+		return "-"
+	}
+	url := strings.TrimSpace(pr.URL)
+	if url == "" {
+		return prLabel(pr)
+	}
+	status := strings.TrimSpace(strings.ToLower(pr.Status))
+	switch status {
+	case "open", "closed", "merged":
+		return fmt.Sprintf("%s (%s)", url, status)
+	default:
+		return url
 	}
 }
 

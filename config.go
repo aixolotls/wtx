@@ -12,9 +12,11 @@ type Config struct {
 	AgentCommand        string `json:"agent_command"`
 	NewBranchBaseRef    string `json:"new_branch_base_ref,omitempty"`
 	NewBranchFetchFirst *bool  `json:"new_branch_fetch_first,omitempty"`
+	IDECommand          string `json:"ide_command,omitempty"`
 }
 
 const defaultAgentCommand = "claude"
+const defaultIDECommand = "code"
 
 func LoadConfig() (Config, error) {
 	path, err := configPath()
