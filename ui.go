@@ -1281,19 +1281,10 @@ func (m model) submitOpenNewBranchForm() (tea.Model, tea.Cmd) {
 }
 
 func (m model) continueOpenTargetSelection(saveCmd tea.Cmd) (tea.Model, tea.Cmd) {
-	if reusable, ok := findReusableOpenSlot(m.openSlots, m.openTargetBranch); ok {
+	if slot, ok := m.orchestrator.ResolveOpenTargetSlot(m.openSlots, m.openTargetBranch, m.openTargetIsNew); ok {
 		m.openCreating = true
 		m.openCreatingStartedAt = time.Now()
-		cmds := []tea.Cmd{m.spinner.Tick, useExistingWorktreeCmd(m.mgr, reusable.Path, m.openTargetBranch)}
-		if saveCmd != nil {
-			cmds = append([]tea.Cmd{saveCmd}, cmds...)
-		}
-		return m, tea.Batch(cmds...)
-	}
-	if available, ok := findAnyAvailableOpenSlot(m.openSlots); ok {
-		m.openCreating = true
-		m.openCreatingStartedAt = time.Now()
-		cmds := []tea.Cmd{m.spinner.Tick, openCmdForTargetOnSlot(m, available)}
+		cmds := []tea.Cmd{m.spinner.Tick, openCmdForTargetOnSlot(m, slot)}
 		if saveCmd != nil {
 			cmds = append([]tea.Cmd{saveCmd}, cmds...)
 		}

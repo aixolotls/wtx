@@ -92,3 +92,21 @@ func (o *WorktreeOrchestrator) PRDataForBranchesWithError(repoRoot string, branc
 	}
 	return o.prMgr.PRDataByBranch(repoRoot, branches)
 }
+
+func (o *WorktreeOrchestrator) ResolveOpenTargetSlot(slots []openSlotState, targetBranch string, targetIsNew bool) (openSlotState, bool) {
+	branch := strings.TrimSpace(targetBranch)
+	if !targetIsNew && branch != "" {
+		for _, slot := range slots {
+			if strings.TrimSpace(slot.Branch) == branch {
+				return slot, true
+			}
+		}
+	}
+	if reusable, ok := findReusableOpenSlot(slots, targetBranch); ok {
+		return reusable, true
+	}
+	if available, ok := findAnyAvailableOpenSlot(slots); ok {
+		return available, true
+	}
+	return openSlotState{}, false
+}
