@@ -23,6 +23,7 @@ func newRootCommand(args []string) *cobra.Command {
 		newConfigCommand(),
 		newCheckoutCommand(),
 		newCompletionCommand(),
+		newUpdateCommand(),
 		newTmuxStatusCommand(),
 		newTmuxTitleCommand(),
 		newTmuxAgentStartCommand(),
@@ -48,6 +49,22 @@ func newConfigCommand() *cobra.Command {
 			return p.Start()
 		},
 	}
+}
+
+func newUpdateCommand() *cobra.Command {
+	var checkOnly bool
+	var quiet bool
+	cmd := &cobra.Command{
+		Use:   "update",
+		Short: "Check for and install the latest wtx version",
+		Args:  cobra.NoArgs,
+		RunE: func(_ *cobra.Command, _ []string) error {
+			return runUpdateCommand(checkOnly, quiet)
+		},
+	}
+	cmd.Flags().BoolVar(&checkOnly, "check", false, "Check for updates only")
+	cmd.Flags().BoolVar(&quiet, "quiet", false, "Print machine-friendly output")
+	return cmd
 }
 
 func newTmuxStatusCommand() *cobra.Command {

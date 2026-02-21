@@ -43,6 +43,18 @@ wtx checkout -b <new_branch>
 wtx checkout -b <new_branch> --from origin/main --fetch
 ```
 
+Check for updates:
+
+```sh
+wtx update --check
+```
+
+Install latest version:
+
+```sh
+wtx update
+```
+
 Configure defaults:
 
 ```sh
