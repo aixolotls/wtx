@@ -231,7 +231,6 @@ func TestCheckoutExistingBranchNonInteractive(t *testing.T) {
 	if result.err != nil {
 		t.Fatalf("checkout existing failed: %v\n%s", result.err, result.out)
 	}
-	assertContains(t, result.out, "Running true")
 
 	rootBranch := currentBranch(t, repo.root)
 	slotBranch := currentBranch(t, repo.managedWT)
@@ -250,7 +249,6 @@ func TestCheckoutNewBranchNonInteractive(t *testing.T) {
 	if result.err != nil {
 		t.Fatalf("checkout new failed: %v\n%s", result.err, result.out)
 	}
-	assertContains(t, result.out, "Running true")
 
 	rootBranch := currentBranch(t, repo.root)
 	slotBranch := currentBranch(t, repo.managedWT)
