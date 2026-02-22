@@ -1,5 +1,6 @@
-# wtx - monorepo-first git worktrees for AI agents
-`wtx` launches an AI agent session (claude, codex, or any agent) in your chosen branch by pooling worktrees.
+# wtx: monorepo-first worktrees for AI agents
+`wtx` starts each agent session in its own ready branch worktree so teams can run truly parallel agent workflows.
+Reuse + locking keeps those parallel worktrees fast, isolated, and safe in large monorepos.
 
 ![wtx screenshot](docs/assets/wtx-screenshot.png)
 
