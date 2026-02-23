@@ -3,6 +3,7 @@ package cmd
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -11,12 +12,16 @@ import (
 	"time"
 	"unicode/utf8"
 
+	"github.com/charmbracelet/bubbles/textinput"
 	tea "github.com/charmbracelet/bubbletea"
-	"github.com/charmbracelet/huh"
 	"github.com/charmbracelet/lipgloss"
 )
 
 type tmuxAction string
+
+var renameCurrentBranchTimeout = 3 * time.Second
+
+const tmuxStatusRefreshTimeout = 500 * time.Millisecond
 
 const (
 	tmuxActionShellSplit  tmuxAction = "shell_split"
@@ -397,9 +402,20 @@ func renameCurrentBranch(basePath string, renameTo string) error {
 	if renameTo == "" {
 		return fmt.Errorf("branch name required")
 	}
-	cmd := exec.Command("git", "branch", "-m", renameTo)
+	timeout := renameCurrentBranchTimeout
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, "git", "branch", "-m", renameTo)
 	cmd.Dir = basePath
+	cmd.Env = append(os.Environ(), "GIT_TERMINAL_PROMPT=0")
 	out, err := cmd.CombinedOutput()
+	if errors.Is(ctx.Err(), context.DeadlineExceeded) {
+		msg := strings.TrimSpace(string(out))
+		if msg != "" {
+			return fmt.Errorf("git branch rename timed out after %s: %s", timeout, msg)
+		}
+		return fmt.Errorf("git branch rename timed out after %s", timeout)
+	}
 	if err != nil {
 		msg := strings.TrimSpace(string(out))
 		if msg != "" {
@@ -413,21 +429,17 @@ func renameCurrentBranch(basePath string, renameTo string) error {
 
 func runRenameBranchPopup(basePath string) error {
 	errMsg := ""
+	branch := ""
 	for {
-		branch := ""
-		form := newRenameBranchForm(&branch, errMsg)
-		model, err := tea.NewProgram(form).Run()
+		model, err := tea.NewProgram(newRenameBranchModel(branch, errMsg)).Run()
 		if err != nil {
 			return err
 		}
-		f, ok := model.(*huh.Form)
-		if ok && (f.State == huh.StateAborted || f.State == huh.StateCompleted && strings.TrimSpace(branch) == "") {
-			if strings.TrimSpace(branch) == "" {
-				return nil
-			}
+		m := model.(renameBranchModel)
+		if m.cancelled {
 			return nil
 		}
-		branch = strings.TrimSpace(branch)
+		branch = strings.TrimSpace(m.branch)
 		if branch == "" {
 			errMsg = "Branch name required."
 			continue
@@ -440,31 +452,94 @@ func runRenameBranchPopup(basePath string) error {
 	}
 }
 
-func newRenameBranchForm(branch *string, errMsg string) *huh.Form {
-	input := huh.NewInput().
-		Title("Rename branch to").
-		Prompt("> ").
-		Placeholder("new branch name").
-		Inline(true).
-		Value(branch)
-	if strings.TrimSpace(errMsg) != "" {
-		input = input.Description(errMsg)
+type renameBranchModel struct {
+	input     textinput.Model
+	errMsg    string
+	cancelled bool
+	branch    string
+}
+
+func newRenameBranchModel(initialValue string, errMsg string) renameBranchModel {
+	ti := textinput.New()
+	ti.Placeholder = "new branch name"
+	ti.Prompt = "> "
+	ti.CharLimit = 256
+	ti.Width = 50
+	ti.SetValue(strings.TrimSpace(initialValue))
+	ti.Focus()
+
+	return renameBranchModel{
+		input:  ti,
+		errMsg: strings.TrimSpace(errMsg),
 	}
-	return huh.NewForm(huh.NewGroup(input)).
-		WithTheme(wtxHuhTheme()).
-		WithShowHelp(false)
+}
+
+func (m renameBranchModel) Init() tea.Cmd {
+	return textinput.Blink
+}
+
+func (m renameBranchModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
+	switch msg := msg.(type) {
+	case tea.KeyMsg:
+		switch msg.String() {
+		case "ctrl+c", "esc":
+			m.cancelled = true
+			return m, tea.Quit
+		case "enter":
+			m.branch = strings.TrimSpace(m.input.Value())
+			return m, tea.Quit
+		}
+	}
+
+	var cmd tea.Cmd
+	m.input, cmd = m.input.Update(msg)
+	return m, cmd
+}
+
+func (m renameBranchModel) View() string {
+	titleStyle := lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("#7D56F4"))
+	errStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("203"))
+	dimStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("245"))
+
+	var b strings.Builder
+	b.WriteString(titleStyle.Render("Rename branch to"))
+	b.WriteString("\n")
+	if m.errMsg != "" {
+		b.WriteString(errStyle.Render(m.errMsg))
+		b.WriteString("\n")
+	}
+	b.WriteString(m.input.View())
+	b.WriteString("\n")
+	b.WriteString(dimStyle.Render("enter submit • esc cancel"))
+	return b.String()
 }
 
 func refreshTmuxStatusNow() {
 	if _, err := exec.LookPath("tmux"); err != nil {
 		return
 	}
-	sessionID, err := currentSessionID()
-	if err == nil && strings.TrimSpace(sessionID) != "" {
-		_ = exec.Command("tmux", "refresh-client", "-S", "-t", sessionID).Run()
+
+	queryWithTimeout := func(args ...string) (string, error) {
+		ctx, cancel := context.WithTimeout(context.Background(), tmuxStatusRefreshTimeout)
+		defer cancel()
+		out, err := exec.CommandContext(ctx, "tmux", args...).Output()
+		if err != nil {
+			return "", err
+		}
+		return strings.TrimSpace(string(out)), nil
+	}
+	runWithTimeout := func(args ...string) error {
+		ctx, cancel := context.WithTimeout(context.Background(), tmuxStatusRefreshTimeout)
+		defer cancel()
+		return exec.CommandContext(ctx, "tmux", args...).Run()
+	}
+
+	sessionID, err := queryWithTimeout("display-message", "-p", "#{session_id}")
+	if err == nil && sessionID != "" {
+		_ = runWithTimeout("refresh-client", "-S", "-t", sessionID)
 		return
 	}
-	_ = exec.Command("tmux", "refresh-client", "-S").Run()
+	_ = runWithTimeout("refresh-client", "-S")
 }
 
 func returnToWTX(basePath string, sourcePane string) error {
@@ -620,6 +695,10 @@ func tmuxActionsPopupCommand(wtxBin string) string {
 
 func tmuxActionsCommandWithAction(wtxBin string, action tmuxAction) string {
 	return fmt.Sprintf("%s tmux-actions %s", shellQuote(wtxBin), shellQuote(string(action)))
+}
+
+func tmuxActionsCommandWithPathAndAction(wtxBin string, path string, action tmuxAction) string {
+	return fmt.Sprintf("%s tmux-actions %s %s", shellQuote(wtxBin), shellQuote(path), shellQuote(string(action)))
 }
 
 func resolveTmuxActionsBasePath() string {
