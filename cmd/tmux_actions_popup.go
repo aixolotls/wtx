@@ -297,10 +297,16 @@ func (m tmuxActionsModel) selectedItem() (tmuxActionItem, bool) {
 
 func runTmuxActions(args []string) error {
 	sourcePane := ""
+	renameTo := ""
 	positional := make([]string, 0, len(args))
 	for i := 0; i < len(args); i++ {
 		if args[i] == "--source-pane" && i+1 < len(args) {
 			sourcePane = strings.TrimSpace(args[i+1])
+			i++
+			continue
+		}
+		if args[i] == "--rename-to" && i+1 < len(args) {
+			renameTo = strings.TrimSpace(args[i+1])
 			i++
 			continue
 		}
@@ -325,9 +331,12 @@ func runTmuxActions(args []string) error {
 
 	if forcedAction != "" {
 		if forcedAction == tmuxActionRename {
+			if strings.TrimSpace(renameTo) != "" {
+				return runTmuxAction(basePath, sourcePane, forcedAction, renameTo)
+			}
 			return runRenameBranchPopup(basePath)
 		}
-		return runTmuxAction(basePath, sourcePane, forcedAction, "")
+		return runTmuxAction(basePath, sourcePane, forcedAction, renameTo)
 	}
 
 	canOpenITermTab := canOpenShellInITermTab()
@@ -402,12 +411,12 @@ func runTmuxAction(basePath string, sourcePane string, action tmuxAction, rename
 
 func runRenameBranchFollowup(basePath string) error {
 	if tmuxAvailable() {
-		return launchRenameBranchPopup(basePath)
+		return launchRenameBranchPrompt(basePath)
 	}
 	return runRenameBranchPopup(basePath)
 }
 
-func launchRenameBranchPopup(basePath string) error {
+func launchRenameBranchPrompt(basePath string) error {
 	bin := strings.TrimSpace(resolveAgentLifecycleBinary())
 	if bin == "" {
 		discovered, err := exec.LookPath("wtx")
@@ -416,13 +425,14 @@ func launchRenameBranchPopup(basePath string) error {
 		}
 		bin = discovered
 	}
-	renameCmd := fmt.Sprintf("%s tmux-actions %s %s",
+	renameCmd := fmt.Sprintf("%s tmux-actions %s %s --rename-to %s",
 		shellQuote(bin),
 		shellQuote(basePath),
 		shellQuote(string(tmuxActionRename)),
+		shellQuote("%%"),
 	)
-	cmd := exec.Command("tmux", "display-popup", "-E", "-w", "60", "-h", "10", renameCmd)
-	return cmd.Start()
+	promptCmd := "run-shell " + renameCmd
+	return exec.Command("tmux", "command-prompt", "-p", "Rename branch to", promptCmd).Run()
 }
 
 func renameCurrentBranch(basePath string, renameTo string) error {
