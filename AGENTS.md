@@ -1,8 +1,12 @@
 # Task Management
 
 - Use Linear as the single source of truth for tasks in this repository.
+- Use Linear as the single source of truth for plans in this repository.
 - Tag all `wtx` repository tasks with the Linear issue label `wtx`.
+- Tag all plan issues with both labels: `wtx` and `plan`.
 - Prefer creating/updating/closing Linear issues instead of maintaining a local task list for active work.
+- To find existing plans, filter Linear issues by labels `wtx` + `plan` (do not inspect all open issues manually).
+- Local notes are optional drafting artifacts only and are not authoritative; if used, they must point to the Linear issue.
 
 # Testing Notes
 
