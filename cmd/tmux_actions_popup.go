@@ -702,39 +702,39 @@ func tmuxActionsCommandWithPathAndAction(wtxBin string, path string, action tmux
 }
 
 func resolveTmuxActionsBasePath() string {
-	if path := strings.TrimSpace(os.Getenv("WTX_WORKTREE_PATH")); path != "" {
-		return path
-	}
+	envPath := strings.TrimSpace(os.Getenv("WTX_WORKTREE_PATH"))
+	optionPath := ""
 	if out, err := exec.Command("tmux", "display-message", "-p", "#{@wtx_worktree_path}").Output(); err == nil {
-		if path := strings.TrimSpace(string(out)); path != "" {
-			return path
-		}
+		optionPath = strings.TrimSpace(string(out))
 	}
-	if out, err := exec.Command("tmux", "display-message", "-p", "#{pane_current_path}").Output(); err == nil {
-		if path := strings.TrimSpace(string(out)); path != "" {
-			return path
-		}
-	}
+	sessionOptionPath := ""
+	sessionEnvPath := ""
 	if sessionID, err := currentSessionID(); err == nil && strings.TrimSpace(sessionID) != "" {
 		if out, err := exec.Command("tmux", "show-options", "-qv", "-t", sessionID, "@wtx_worktree_path").Output(); err == nil {
-			if path := strings.TrimSpace(string(out)); path != "" {
-				return path
-			}
+			sessionOptionPath = strings.TrimSpace(string(out))
 		}
 		if out, err := exec.Command("tmux", "show-environment", "-t", sessionID, "WTX_WORKTREE_PATH").Output(); err == nil {
 			line := strings.TrimSpace(string(out))
 			if strings.HasPrefix(line, "WTX_WORKTREE_PATH=") {
-				if path := strings.TrimSpace(strings.TrimPrefix(line, "WTX_WORKTREE_PATH=")); path != "" {
-					return path
-				}
+				sessionEnvPath = strings.TrimSpace(strings.TrimPrefix(line, "WTX_WORKTREE_PATH="))
 			}
 		}
 	}
 	cwd, err := os.Getwd()
 	if err != nil {
-		return ""
+		cwd = ""
 	}
-	return cwd
+	return resolveTmuxActionsBasePathFromCandidates(envPath, optionPath, sessionOptionPath, sessionEnvPath, cwd)
+}
+
+func resolveTmuxActionsBasePathFromCandidates(paths ...string) string {
+	for _, path := range paths {
+		path = strings.TrimSpace(path)
+		if path != "" {
+			return path
+		}
+	}
+	return ""
 }
 
 var actionTokenSplitRe = regexp.MustCompile(`[^a-z0-9]+`)

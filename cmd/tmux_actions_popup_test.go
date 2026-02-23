@@ -251,3 +251,36 @@ func runGitOutput(t *testing.T, dir string, args ...string) string {
 	}
 	return string(out)
 }
+
+func TestResolveTmuxActionsBasePathFromCandidates(t *testing.T) {
+	t.Run("uses first non-empty candidate", func(t *testing.T) {
+		got := resolveTmuxActionsBasePathFromCandidates(
+			"",
+			"/tmp/option",
+			"/tmp/session-option",
+			"/tmp/session-env",
+			"/tmp/cwd",
+		)
+		if got != "/tmp/option" {
+			t.Fatalf("expected /tmp/option, got %q", got)
+		}
+	})
+
+	t.Run("falls back through session metadata then cwd", func(t *testing.T) {
+		got := resolveTmuxActionsBasePathFromCandidates(
+			"",
+			"",
+			"",
+			"/tmp/session-env",
+			"/tmp/cwd",
+		)
+		if got != "/tmp/session-env" {
+			t.Fatalf("expected /tmp/session-env, got %q", got)
+		}
+
+		got = resolveTmuxActionsBasePathFromCandidates("", "", "", "", "/tmp/cwd")
+		if got != "/tmp/cwd" {
+			t.Fatalf("expected /tmp/cwd, got %q", got)
+		}
+	})
+}

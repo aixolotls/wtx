@@ -93,9 +93,14 @@ func applyStartupThemeToSession(sessionID string, cwd string, parentTerminal str
 	if sessionID == "" {
 		return
 	}
+	cwd = strings.TrimSpace(cwd)
 	banner := stripANSI(renderBanner("", cwd, ""))
 	// Session is detached at startup; avoid destroy-unattached here.
 	applyWTXSessionDefaults(sessionID, false)
+	if cwd != "" {
+		_ = exec.Command("tmux", "set-environment", "-t", sessionID, "WTX_WORKTREE_PATH", cwd).Run()
+		tmuxSetOption(sessionID, "@wtx_worktree_path", cwd)
+	}
 	parentTerminal = strings.TrimSpace(parentTerminal)
 	if parentTerminal != "" {
 		_ = exec.Command("tmux", "set-environment", "-t", sessionID, "WTX_PARENT_TERMINAL", parentTerminal).Run()
