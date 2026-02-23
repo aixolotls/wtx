@@ -159,6 +159,13 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, cmd
 		}
 		if keyMsg, ok := msg.(tea.KeyMsg); ok {
+			if isTabKey(keyMsg) {
+				if m.autofillOpenNewBranchDraftIfEmpty() {
+					m.openNewBranchForm = newOpenNewBranchForm(m.openFormBranchPtr, m.openFormBaseRefPtr, m.openFormFetchPtr)
+					return m, m.openNewBranchForm.Init()
+				}
+				return applyFormMsg(tea.KeyMsg{Type: tea.KeyTab})
+			}
 			switch keyMsg.Type {
 			case tea.KeyEsc:
 				m.openNewBranchForm = nil
@@ -170,7 +177,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				return m, nil
 			case tea.KeyUp:
 				return applyFormMsg(tea.KeyMsg{Type: tea.KeyShiftTab})
-			case tea.KeyDown, tea.KeyTab:
+			case tea.KeyDown:
 				return applyFormMsg(tea.KeyMsg{Type: tea.KeyTab})
 			case tea.KeyShiftTab:
 				return applyFormMsg(tea.KeyMsg{Type: tea.KeyShiftTab})
@@ -198,7 +205,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				return m, nil
 			case "up", "shift+tab":
 				return applyFormMsg(tea.KeyMsg{Type: tea.KeyShiftTab})
-			case "down", "tab":
+			case "down":
 				return applyFormMsg(tea.KeyMsg{Type: tea.KeyTab})
 			case "enter", "ctrl+m":
 				return m.submitOpenNewBranchForm()
@@ -462,8 +469,13 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 			if m.openShowDebug {
 				if m.openDebugCreating {
-					switch msg.String() {
-					case "enter":
+					if isTabKey(msg) && strings.TrimSpace(m.newBranchInput.Value()) == "" {
+						m.newBranchInput.SetValue(draftBranchName(time.Now()))
+						m.errMsg = ""
+						return m, nil
+					}
+					switch msg.Type {
+					case tea.KeyEnter:
 						branch := strings.TrimSpace(m.newBranchInput.Value())
 						if branch == "" {
 							m.errMsg = "Branch name required."
@@ -471,12 +483,21 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 						}
 						m.errMsg = ""
 						return m, createOpenWorktreeCmd(m.mgr, branch, resolveNewBranchBaseRef(m.openDefaultBaseRef, m.status.BaseRef))
-					case "esc":
+					case tea.KeyEsc:
 						m.openDebugCreating = false
 						m.newBranchInput.Blur()
 						m.newBranchInput.SetValue("")
 						m.errMsg = ""
 						return m, nil
+					}
+					if msg.String() == "enter" {
+						branch := strings.TrimSpace(m.newBranchInput.Value())
+						if branch == "" {
+							m.errMsg = "Branch name required."
+							return m, nil
+						}
+						m.errMsg = ""
+						return m, createOpenWorktreeCmd(m.mgr, branch, resolveNewBranchBaseRef(m.openDefaultBaseRef, m.status.BaseRef))
 					}
 					var cmd tea.Cmd
 					m.newBranchInput, cmd = m.newBranchInput.Update(msg)
@@ -717,6 +738,61 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		if m.mode == modeBranchName {
+			if isTabKey(msg) && strings.TrimSpace(m.newBranchInput.Value()) == "" {
+				m.newBranchInput.SetValue(draftBranchName(time.Now()))
+				m.errMsg = ""
+				return m, nil
+			}
+			switch msg.Type {
+			case tea.KeyEsc:
+				m.mode = modeAction
+				m.newBranchInput.Blur()
+				m.newBranchInput.SetValue("")
+				m.errMsg = ""
+				return m, nil
+			case tea.KeyEnter:
+				branch := strings.TrimSpace(m.newBranchInput.Value())
+				if branch == "" {
+					m.errMsg = "Branch name required."
+					return m, nil
+				}
+				if !m.actionCreate {
+					row, ok := selectedWorktree(m.status, m.listIndex)
+					if !ok {
+						m.errMsg = "No worktree selected."
+						return m, nil
+					}
+					lock, err := m.mgr.AcquireWorktreeLock(row.Path)
+					if err != nil {
+						m.errMsg = err.Error()
+						return m, nil
+					}
+					if err := m.mgr.CheckoutNewBranch(row.Path, branch, resolveNewBranchBaseRef(m.openDefaultBaseRef, m.status.BaseRef), m.openDefaultFetch); err != nil {
+						lock.Release()
+						m.errMsg = err.Error()
+						return m, nil
+					}
+					m.errMsg = ""
+					m.warnMsg = ""
+					m.pendingPath = row.Path
+					m.pendingBranch = branch
+					m.pendingOpenShell = false
+					m.pendingLock = lock
+					return m, tea.Quit
+				}
+				m.mode = modeCreating
+				m.creatingBranch = branch
+				m.creatingBaseRef = resolveNewBranchBaseRef(m.openDefaultBaseRef, m.status.BaseRef)
+				m.creatingExisting = false
+				m.creatingStartedAt = time.Now()
+				m.newBranchInput.Blur()
+				m.newBranchInput.SetValue("")
+				m.errMsg = ""
+				return m, tea.Batch(
+					m.spinner.Tick,
+					createWorktreeCmd(m.mgr, branch, resolveNewBranchBaseRef(m.openDefaultBaseRef, m.status.BaseRef)),
+				)
+			}
 			switch msg.String() {
 			case "esc":
 				m.mode = modeAction
@@ -1305,6 +1381,40 @@ func (m model) continueOpenTargetSelection(saveCmd tea.Cmd) (tea.Model, tea.Cmd)
 	return m, tea.Batch(cmds...)
 }
 
+func (m *model) autofillOpenNewBranchDraftIfEmpty() bool {
+	if m == nil || m.openNewBranchForm == nil {
+		return false
+	}
+	if m.openFormBranchPtr == nil {
+		return false
+	}
+	current := strings.TrimSpace(*m.openFormBranchPtr)
+	if current != "" {
+		return false
+	}
+	*m.openFormBranchPtr = draftBranchName(time.Now())
+	m.errMsg = ""
+	return true
+}
+
+func draftBranchName(now time.Time) string {
+	return fmt.Sprintf("draft-%d", now.Unix())
+}
+
+func isTabKey(msg tea.KeyMsg) bool {
+	if msg.Type == tea.KeyTab {
+		return true
+	}
+	switch msg.String() {
+	case "tab", "ctrl+i":
+		return true
+	}
+	if msg.Type == tea.KeyRunes && len(msg.Runes) > 0 && msg.Runes[0] == '\t' {
+		return true
+	}
+	return false
+}
+
 func syncTabTitleWithSelection(m model) {
 	if !m.ready || !m.status.InRepo {
 		setITermWTXTab()
@@ -1392,7 +1502,7 @@ func (m model) View() string {
 			b.WriteString(errorStyle.Render(m.errMsg))
 			b.WriteString("\n")
 		}
-		b.WriteString("\nPress enter to create, esc to cancel.\n")
+		b.WriteString("\nPress tab to generate draft-<ts>, enter to create, esc to cancel.\n")
 		return b.String()
 	}
 	if m.mode == modeBranchPick {
@@ -1859,7 +1969,7 @@ func newBranchInput() textinput.Model {
 
 func newCreateBranchInput() textinput.Model {
 	ti := textinput.New()
-	ti.Placeholder = "feature/my-branch"
+	ti.Placeholder = "tab to generate draft name"
 	ti.CharLimit = 200
 	ti.Width = 40
 	return ti

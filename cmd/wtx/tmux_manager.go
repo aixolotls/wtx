@@ -41,7 +41,13 @@ func ensureFreshTmuxSession(args []string) (bool, error) {
 	setITermWTXTab()
 
 	session := fmt.Sprintf("wtx-%d", time.Now().UnixNano())
-	tmuxArgs := []string{"new-session", "-d", "-e", "WTX_STATUS_BIN=" + bin, "-s", session, "-c", cwd}
+	parentTerminal := resolveParentTerminalProgram()
+	tmuxArgs := []string{
+		"new-session", "-d",
+		"-e", "WTX_STATUS_BIN=" + bin,
+		"-e", "WTX_PARENT_TERMINAL=" + parentTerminal,
+		"-s", session, "-c", cwd,
+	}
 	cmd := exec.Command("tmux", tmuxArgs...)
 	out, err := cmd.CombinedOutput()
 	if err != nil {
@@ -52,7 +58,7 @@ func ensureFreshTmuxSession(args []string) (bool, error) {
 		return false, err
 	}
 
-	applyStartupThemeToSession(session, cwd)
+	applyStartupThemeToSession(session, cwd, parentTerminal)
 	launchErrCh := make(chan error, 1)
 	go func() {
 		// Attach first, then launch the command in the session pane to avoid
@@ -78,7 +84,7 @@ func ensureFreshTmuxSession(args []string) (bool, error) {
 	return true, nil
 }
 
-func applyStartupThemeToSession(sessionID string, cwd string) {
+func applyStartupThemeToSession(sessionID string, cwd string, parentTerminal string) {
 	sessionID = strings.TrimSpace(sessionID)
 	if sessionID == "" {
 		return
@@ -86,6 +92,11 @@ func applyStartupThemeToSession(sessionID string, cwd string) {
 	banner := stripANSI(renderBanner("", cwd, ""))
 	// Session is detached at startup; avoid destroy-unattached here.
 	applyWTXSessionDefaults(sessionID, false)
+	parentTerminal = strings.TrimSpace(parentTerminal)
+	if parentTerminal != "" {
+		_ = exec.Command("tmux", "set-environment", "-t", sessionID, "WTX_PARENT_TERMINAL", parentTerminal).Run()
+		tmuxSetOption(sessionID, "@wtx_parent_terminal", parentTerminal)
+	}
 	configureTmuxStatus(sessionID, "200", tmuxStatusIntervalSeconds)
 	tmuxSetOption(sessionID, "status-left", " "+banner+" ")
 }
@@ -494,6 +505,22 @@ func supportsTmuxAgentLifecycle(bin string) bool {
 	cmd.Stdout = io.Discard
 	cmd.Stderr = io.Discard
 	return cmd.Run() == nil
+}
+
+func resolveParentTerminalProgram() string {
+	term := strings.TrimSpace(os.Getenv("WTX_PARENT_TERMINAL"))
+	if term != "" {
+		return term
+	}
+	term = strings.TrimSpace(os.Getenv("TERM_PROGRAM"))
+	if term != "" {
+		return term
+	}
+	term = strings.TrimSpace(os.Getenv("TERM"))
+	if term != "" {
+		return term
+	}
+	return "terminal"
 }
 
 type tmuxAgentState struct {
