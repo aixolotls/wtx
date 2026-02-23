@@ -452,7 +452,7 @@ func renameCurrentBranch(basePath string, renameTo string) error {
 		}
 		return err
 	}
-	refreshTmuxStatusNow()
+	go refreshTmuxStatusNow()
 	return nil
 }
 
@@ -504,13 +504,22 @@ func refreshTmuxStatusNow() {
 	if _, err := exec.LookPath("tmux"); err != nil {
 		return
 	}
+	queryWithTimeout := func(args ...string) (string, error) {
+		ctx, cancel := context.WithTimeout(context.Background(), 500*time.Millisecond)
+		defer cancel()
+		out, err := exec.CommandContext(ctx, "tmux", args...).Output()
+		if err != nil {
+			return "", err
+		}
+		return strings.TrimSpace(string(out)), nil
+	}
 	runRefresh := func(args ...string) error {
 		ctx, cancel := context.WithTimeout(context.Background(), 500*time.Millisecond)
 		defer cancel()
 		return exec.CommandContext(ctx, "tmux", args...).Run()
 	}
-	sessionID, err := currentSessionID()
-	if err == nil && strings.TrimSpace(sessionID) != "" {
+	sessionID, err := queryWithTimeout("display-message", "-p", "#{session_id}")
+	if err == nil && sessionID != "" {
 		_ = runRefresh("refresh-client", "-S", "-t", sessionID)
 		return
 	}
