@@ -12,4 +12,5 @@ E2E_HOME="$(mktemp -d)"
 trap 'rm -rf "$E2E_HOME"' EXIT
 
 E2E_COUNT="${WTX_E2E_COUNT:-1}"
-HOME="$E2E_HOME" WTX_E2E_BIN="$ROOT_DIR/bin/wtx" go test -v ./e2e -count="$E2E_COUNT" "$@"
+E2E_PARALLEL="${WTX_E2E_PARALLEL:-10}"
+HOME="$E2E_HOME" WTX_E2E_BIN="$ROOT_DIR/bin/wtx" go test -v ./e2e -count="$E2E_COUNT" -parallel="$E2E_PARALLEL" "$@"
