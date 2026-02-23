@@ -11,4 +11,4 @@ go build -o ./bin/wtx ./cmd/wtx
 E2E_HOME="$(mktemp -d)"
 trap 'rm -rf "$E2E_HOME"' EXIT
 
-HOME="$E2E_HOME" WTX_E2E_BIN="$ROOT_DIR/bin/wtx" go test ./e2e -count=1 "$@"
+HOME="$E2E_HOME" WTX_E2E_BIN="$ROOT_DIR/bin/wtx" go test -v ./e2e -count=1 "$@"
