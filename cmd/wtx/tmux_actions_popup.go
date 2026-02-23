@@ -12,17 +12,20 @@ import (
 	"unicode/utf8"
 
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/charmbracelet/huh"
 	"github.com/charmbracelet/lipgloss"
 )
 
 type tmuxAction string
 
 const (
-	tmuxActionShellSplit tmuxAction = "shell_split"
-	tmuxActionShellTab   tmuxAction = "shell_tab"
-	tmuxActionIDE        tmuxAction = "ide"
-	tmuxActionPR         tmuxAction = "pr"
-	tmuxActionBack       tmuxAction = "back_to_wtx"
+	tmuxActionShellSplit  tmuxAction = "shell_split"
+	tmuxActionShellTab    tmuxAction = "shell_tab"
+	tmuxActionShellWindow tmuxAction = "shell_window"
+	tmuxActionIDE         tmuxAction = "ide"
+	tmuxActionPR          tmuxAction = "pr"
+	tmuxActionBack        tmuxAction = "back_to_wtx"
+	tmuxActionRename      tmuxAction = "rename_branch"
 )
 
 type tmuxActionItem struct {
@@ -42,15 +45,21 @@ type tmuxActionsModel struct {
 	cancel     bool
 	prKnown    bool
 	updateHint string
+	renameErr  string
+	renameTo   string
 }
 
-func newTmuxActionsModel(basePath string, prAvailable bool, canOpenITermTab bool) tmuxActionsModel {
+func newTmuxActionsModel(basePath string, prAvailable bool, canOpenITermTab bool, canOpenShellWindow bool) tmuxActionsModel {
+	terminalName := terminalProgramLabel()
+	terminalKeyword := strings.ToLower(strings.TrimSpace(terminalName))
+	windowTerminalName := terminalWindowProgramLabel()
+	windowTerminalKeyword := strings.ToLower(strings.TrimSpace(windowTerminalName))
 	items := []tmuxActionItem{
 		{Label: "Back to WTX (stop agent)", Action: tmuxActionBack, Keywords: "back return wtx unlock ctrl+w"},
 		{Label: "Open shell (split down)", Action: tmuxActionShellSplit, Keywords: "shell split pane ctrl+s s"},
-	}
-	if canOpenITermTab {
-		items = append(items, tmuxActionItem{Label: "Open shell (new iTerm tab)", Action: tmuxActionShellTab, Keywords: "shell tab iterm"})
+		{Label: fmt.Sprintf("Open shell (new %s tab)", terminalName), Action: tmuxActionShellTab, Keywords: strings.TrimSpace("shell tab iterm ctrl+t t " + terminalKeyword), Disabled: !canOpenITermTab},
+		{Label: fmt.Sprintf("Open shell (new %s window)", windowTerminalName), Action: tmuxActionShellWindow, Keywords: strings.TrimSpace("shell window iterm terminal ctrl+n n " + terminalKeyword + " " + windowTerminalKeyword), Disabled: !canOpenShellWindow},
+		{Label: "Rename branch", Action: tmuxActionRename, Keywords: "rename branch ctrl+r r"},
 	}
 	items = append(items,
 		tmuxActionItem{Label: "Open IDE", Action: tmuxActionIDE, Keywords: "ide editor code ctrl+l l"},
@@ -92,6 +101,20 @@ func (m tmuxActionsModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case "ctrl+c", "esc":
 			m.cancel = true
 			return m, tea.Quit
+		case "ctrl+w":
+			return m.selectAction(tmuxActionBack)
+		case "ctrl+s":
+			return m.selectAction(tmuxActionShellSplit)
+		case "ctrl+t":
+			return m.selectAction(tmuxActionShellTab)
+		case "ctrl+n":
+			return m.selectAction(tmuxActionShellWindow)
+		case "ctrl+l":
+			return m.selectAction(tmuxActionIDE)
+		case "ctrl+p":
+			return m.selectAction(tmuxActionPR)
+		case "ctrl+r":
+			return m.selectAction(tmuxActionRename)
 		case "backspace":
 			if m.query != "" {
 				_, size := utf8.DecodeLastRuneInString(m.query)
@@ -125,6 +148,10 @@ func (m tmuxActionsModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 			if selected.Disabled {
 				return m, nil
+			}
+			if selected.Action == tmuxActionRename {
+				m.chosen = selected.Action
+				return m, tea.Quit
 			}
 			m.chosen = selected.Action
 			return m, tea.Quit
@@ -186,12 +213,30 @@ func (m tmuxActionsModel) View() string {
 		b.WriteString("\n")
 	}
 	b.WriteString("\n")
-	b.WriteString(dimStyle.Render("type to filter • ↑/↓ navigate • enter select • esc cancel"))
+	b.WriteString(dimStyle.Render("ctrl+w back • ctrl+s shell • ctrl+t tab • ctrl+n window • ctrl+l IDE • ctrl+p PR • ctrl+r rename • ↑/↓ navigate • enter select • esc cancel"))
 	if m.updateHint != "" {
 		b.WriteString("\n")
 		b.WriteString(lipgloss.NewStyle().Foreground(lipgloss.Color("240")).Render(m.updateHint))
 	}
 	return b.String()
+}
+
+func (m tmuxActionsModel) selectAction(action tmuxAction) (tea.Model, tea.Cmd) {
+	for _, item := range m.items {
+		if item.Action != action {
+			continue
+		}
+		if item.Disabled {
+			return m, nil
+		}
+		if action == tmuxActionRename {
+			m.chosen = action
+			return m, tea.Quit
+		}
+		m.chosen = action
+		return m, tea.Quit
+	}
+	return m, nil
 }
 
 func (m *tmuxActionsModel) rebuildFiltered() {
@@ -273,11 +318,12 @@ func runTmuxActions(args []string) error {
 	}
 
 	if forcedAction != "" {
-		return runTmuxAction(basePath, sourcePane, forcedAction)
+		return runTmuxAction(basePath, sourcePane, forcedAction, "")
 	}
 
 	canOpenITermTab := canOpenShellInITermTab()
-	program := tea.NewProgram(newTmuxActionsModel(basePath, false, canOpenITermTab))
+	canOpenWindow := canOpenShellWindow()
+	program := tea.NewProgram(newTmuxActionsModel(basePath, false, canOpenITermTab, canOpenWindow))
 	finalModel, err := program.Run()
 	if err != nil {
 		return err
@@ -286,7 +332,7 @@ func runTmuxActions(args []string) error {
 	if m.cancel || m.chosen == "" {
 		return nil
 	}
-	return runTmuxAction(basePath, sourcePane, m.chosen)
+	return runTmuxAction(basePath, sourcePane, m.chosen, m.renameTo)
 }
 
 func parseTmuxAction(value string) tmuxAction {
@@ -297,16 +343,20 @@ func parseTmuxAction(value string) tmuxAction {
 		return tmuxActionShellSplit
 	case string(tmuxActionShellTab):
 		return tmuxActionShellTab
+	case string(tmuxActionShellWindow):
+		return tmuxActionShellWindow
 	case string(tmuxActionIDE):
 		return tmuxActionIDE
 	case string(tmuxActionPR):
 		return tmuxActionPR
+	case string(tmuxActionRename):
+		return tmuxActionRename
 	default:
 		return ""
 	}
 }
 
-func runTmuxAction(basePath string, sourcePane string, action tmuxAction) error {
+func runTmuxAction(basePath string, sourcePane string, action tmuxAction, renameTo string) error {
 	switch action {
 	case tmuxActionBack:
 		return returnToWTX(basePath, sourcePane)
@@ -315,6 +365,11 @@ func runTmuxAction(basePath string, sourcePane string, action tmuxAction) error 
 		return cmd.Run()
 	case tmuxActionShellTab:
 		return openShellInITermTab(basePath)
+	case tmuxActionShellWindow:
+		if isITermTerminal(resolveSessionParentTerminalProgram()) {
+			return openShellInITermWindow(basePath)
+		}
+		return openShellInTerminalWindow(basePath)
 	case tmuxActionIDE:
 		clearPopupScreen()
 		return runIDEPicker([]string{basePath})
@@ -322,9 +377,94 @@ func runTmuxAction(basePath string, sourcePane string, action tmuxAction) error 
 		cmd := exec.Command("gh", "pr", "view", "--web")
 		cmd.Dir = basePath
 		return cmd.Run()
+	case tmuxActionRename:
+		clearPopupScreen()
+		if strings.TrimSpace(renameTo) != "" {
+			return renameCurrentBranch(basePath, renameTo)
+		}
+		return runRenameBranchPopup(basePath)
 	default:
 		return nil
 	}
+}
+
+func renameCurrentBranch(basePath string, renameTo string) error {
+	basePath = strings.TrimSpace(basePath)
+	if basePath == "" {
+		return fmt.Errorf("missing path")
+	}
+	renameTo = strings.TrimSpace(renameTo)
+	if renameTo == "" {
+		return fmt.Errorf("branch name required")
+	}
+	cmd := exec.Command("git", "branch", "-m", renameTo)
+	cmd.Dir = basePath
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		msg := strings.TrimSpace(string(out))
+		if msg != "" {
+			return fmt.Errorf("%s", msg)
+		}
+		return err
+	}
+	refreshTmuxStatusNow()
+	return nil
+}
+
+func runRenameBranchPopup(basePath string) error {
+	errMsg := ""
+	for {
+		branch := ""
+		form := newRenameBranchForm(&branch, errMsg)
+		model, err := tea.NewProgram(form).Run()
+		if err != nil {
+			return err
+		}
+		f, ok := model.(*huh.Form)
+		if ok && (f.State == huh.StateAborted || f.State == huh.StateCompleted && strings.TrimSpace(branch) == "") {
+			if strings.TrimSpace(branch) == "" {
+				return nil
+			}
+			return nil
+		}
+		branch = strings.TrimSpace(branch)
+		if branch == "" {
+			errMsg = "Branch name required."
+			continue
+		}
+		if err := renameCurrentBranch(basePath, branch); err != nil {
+			errMsg = err.Error()
+			continue
+		}
+		return nil
+	}
+}
+
+func newRenameBranchForm(branch *string, errMsg string) *huh.Form {
+	input := huh.NewInput().
+		Title("Rename branch to").
+		Prompt("> ").
+		Placeholder("new branch name").
+		Inline(true).
+		Value(branch)
+	if strings.TrimSpace(errMsg) != "" {
+		input = input.Description(errMsg)
+	}
+	return huh.NewForm(huh.NewGroup(input)).
+		WithTheme(wtxHuhTheme()).
+		WithShowHelp(false)
+}
+
+func refreshTmuxStatusNow() {
+	if _, err := exec.LookPath("tmux"); err != nil {
+		return
+	}
+	sessionID, err := currentSessionID()
+	if err == nil && strings.TrimSpace(sessionID) != "" {
+		_ = exec.Command("tmux", "refresh-client", "-S", "-t", sessionID).Run()
+		return
+	}
+	_ = exec.Command("tmux", "refresh-client", "-S").Run()
 }
 
 func returnToWTX(basePath string, sourcePane string) error {
@@ -399,13 +539,10 @@ func canOpenShellInITermTab() bool {
 	if iTermIntegrationDisabled() {
 		return false
 	}
-	if strings.TrimSpace(os.Getenv("TERM_PROGRAM")) != "iTerm.app" {
+	if !isITermTerminal(resolveSessionParentTerminalProgram()) {
 		return false
 	}
-	if _, err := exec.LookPath("osascript"); err != nil {
-		return false
-	}
-	return true
+	return canControlITerm()
 }
 
 func openShellInITermTab(path string) error {
@@ -427,6 +564,45 @@ on run argv
 				write text "cd " & quoted form of p
 			end tell
 		end tell
+	end tell
+end run
+`
+	cmd := exec.Command("osascript", "-e", script, "--", path)
+	return cmd.Run()
+}
+
+func openShellInITermWindow(path string) error {
+	path = strings.TrimSpace(path)
+	if path == "" {
+		return fmt.Errorf("missing path")
+	}
+	script := `
+on run argv
+	set p to item 1 of argv
+	tell application "iTerm"
+		activate
+		create window with default profile
+		tell current session of current window
+			write text "cd " & quoted form of p
+		end tell
+	end tell
+end run
+`
+	cmd := exec.Command("osascript", "-e", script, "--", path)
+	return cmd.Run()
+}
+
+func openShellInTerminalWindow(path string) error {
+	path = strings.TrimSpace(path)
+	if path == "" {
+		return fmt.Errorf("missing path")
+	}
+	script := `
+on run argv
+	set p to item 1 of argv
+	tell application "Terminal"
+		activate
+		do script "cd " & quoted form of p
 	end tell
 end run
 `
@@ -483,3 +659,84 @@ func resolveTmuxActionsBasePath() string {
 }
 
 var actionTokenSplitRe = regexp.MustCompile(`[^a-z0-9]+`)
+
+func terminalProgramLabel() string {
+	term := resolveSessionParentTerminalProgram()
+	if isITermTerminal(term) {
+		return "iTerm"
+	}
+	switch term {
+	case "Apple_Terminal":
+		return "Terminal"
+	case "":
+		return "terminal"
+	default:
+		return term
+	}
+}
+
+func terminalWindowProgramLabel() string {
+	if isITermTerminal(resolveSessionParentTerminalProgram()) {
+		return "iTerm"
+	}
+	return "Terminal"
+}
+
+func resolveSessionParentTerminalProgram() string {
+	if term := strings.TrimSpace(os.Getenv("WTX_PARENT_TERMINAL")); term != "" {
+		return term
+	}
+	if sessionID, err := currentSessionID(); err == nil && strings.TrimSpace(sessionID) != "" {
+		if out, err := exec.Command("tmux", "show-options", "-qv", "-t", sessionID, "@wtx_parent_terminal").Output(); err == nil {
+			if term := strings.TrimSpace(string(out)); term != "" {
+				return term
+			}
+		}
+		if out, err := exec.Command("tmux", "show-environment", "-t", sessionID, "WTX_PARENT_TERMINAL").Output(); err == nil {
+			line := strings.TrimSpace(string(out))
+			if strings.HasPrefix(line, "WTX_PARENT_TERMINAL=") {
+				if term := strings.TrimSpace(strings.TrimPrefix(line, "WTX_PARENT_TERMINAL=")); term != "" {
+					return term
+				}
+			}
+		}
+	}
+	if term := strings.TrimSpace(os.Getenv("TERM_PROGRAM")); term != "" {
+		return term
+	}
+	if term := strings.TrimSpace(os.Getenv("TERM")); term != "" {
+		return term
+	}
+	return "terminal"
+}
+
+func isITermTerminal(value string) bool {
+	v := strings.ToLower(strings.TrimSpace(value))
+	if v == "" {
+		return false
+	}
+	return v == "iterm" || v == "iterm.app" || strings.Contains(v, "iterm")
+}
+
+func canControlITerm() bool {
+	if _, err := exec.LookPath("osascript"); err != nil {
+		return false
+	}
+	cmd := exec.Command("osascript", "-e", `tell application "iTerm" to version`)
+	return cmd.Run() == nil
+}
+
+func canControlTerminal() bool {
+	if _, err := exec.LookPath("osascript"); err != nil {
+		return false
+	}
+	cmd := exec.Command("osascript", "-e", `tell application "Terminal" to version`)
+	return cmd.Run() == nil
+}
+
+func canOpenShellWindow() bool {
+	if isITermTerminal(resolveSessionParentTerminalProgram()) {
+		return canOpenShellInITermTab()
+	}
+	return canControlTerminal()
+}

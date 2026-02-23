@@ -262,7 +262,6 @@ func renderOpenScreen(m model) string {
 			cursor := "  "
 			rowRenderer := secondaryStyle.Render
 			if i == m.openDebugIndex {
-				cursor = "> "
 				rowRenderer = selectorSelectedStyle.Render
 			}
 			state := debugWorktreeState(slot)
@@ -294,7 +293,7 @@ func renderOpenScreen(m model) string {
 		}
 		b.WriteString("\nUse up/down to select. d delete selected (with confirm). u unlock selected (with confirm). n new worktree.\n")
 		if m.openDebugCreating {
-			b.WriteString("Type branch name, enter to create, esc to cancel. ")
+			b.WriteString("Type branch name, tab generates draft-<ts>, enter to create, esc to cancel. ")
 		}
 		b.WriteString("Ctrl+R refreshes. Esc/Ctrl+D back. q quits.\n")
 		return b.String()
@@ -325,7 +324,7 @@ func renderOpenScreen(m model) string {
 		b.WriteString("No clean available worktree. Choose target:\n")
 		createLine := "  + Create new worktree"
 		if m.openPickIndex == 0 {
-			createLine = "> + Create new worktree"
+			createLine = "  + Create new worktree"
 			b.WriteString(selectorSelectedStyle.Render(createLine) + "\n")
 		} else {
 			b.WriteString(actionNormalStyle.Render(createLine) + "\n")
@@ -335,7 +334,6 @@ func renderOpenScreen(m model) string {
 			cursor := "  "
 			render := actionNormalStyle.Render
 			if rowIndex == m.openPickIndex {
-				cursor = "> "
 				render = selectorSelectedStyle.Render
 			}
 			state := debugWorktreeState(slot)
@@ -368,7 +366,7 @@ func renderOpenScreen(m model) string {
 	b.WriteString("Choose branch:\n")
 	newBranchLine := "  <new branch>"
 	if m.openSelected == 0 {
-		newBranchLine = "> <new branch>"
+		newBranchLine = "  <new branch>"
 		b.WriteString(actionSelectedStyle.Render(newBranchLine) + "\n")
 	} else {
 		b.WriteString(actionNormalStyle.Render(newBranchLine) + "\n")
@@ -377,9 +375,6 @@ func renderOpenScreen(m model) string {
 	for _, branchIndex := range filtered {
 		branch := m.openBranches[branchIndex]
 		cursor := "  "
-		if m.openSelected == branchIndex+1 {
-			cursor = "> "
-		}
 		pr := "-"
 		if branch.PRLoading && m.openLoading {
 			pr = m.ghSpinner.View()

@@ -24,6 +24,9 @@ func wtxHuhTheme() *huh.Theme {
 	t := *huh.ThemeCharm()
 	t.Focused.FocusedButton = t.Focused.FocusedButton.Background(lipgloss.Color("#7D56F4"))
 	t.Focused.Next = t.Focused.FocusedButton
+	// Keep placeholder text fully readable on first paint by avoiding a block-style cursor.
+	t.Focused.TextInput.Cursor = lipgloss.NewStyle()
+	t.Focused.TextInput.CursorText = lipgloss.NewStyle()
 	return &t
 }
 
