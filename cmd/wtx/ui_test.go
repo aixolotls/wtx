@@ -3,6 +3,7 @@ package main
 import (
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestRenderCreateProgress_NewBranchFromBase(t *testing.T) {
@@ -51,5 +52,12 @@ func TestShouldFetchByBranch(t *testing.T) {
 				t.Fatalf("expected %v, got %v", tc.want, got)
 			}
 		})
+	}
+}
+
+func TestDraftBranchName(t *testing.T) {
+	got := draftBranchName(time.Unix(1700000000, 0))
+	if got != "draft-1700000000" {
+		t.Fatalf("expected deterministic draft name, got %q", got)
 	}
 }

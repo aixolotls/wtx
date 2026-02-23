@@ -1,9 +1,6 @@
 package main
 
 import (
-	"errors"
-	"strings"
-
 	"github.com/charmbracelet/huh"
 )
 
@@ -18,18 +15,15 @@ func newOpenNewBranchForm(branch *string, baseRef *string, fetch *bool) *huh.For
 		Key(openNewBranchNameKey).
 		Title("Branch name").
 		Inline(true).
-		Value(branch).
-		Validate(func(value string) error {
-			if strings.TrimSpace(value) == "" {
-				return errors.New("branch name is required")
-			}
-			return nil
-		})
+		Prompt("> ").
+		Placeholder("tab to generate draft name").
+		Value(branch)
 
 	baseInput := huh.NewInput().
 		Key(openNewBaseRefKey).
 		Title("Checkout from").
 		Inline(true).
+		Prompt("> ").
 		Value(baseRef)
 
 	fetchConfirm := huh.NewConfirm().
