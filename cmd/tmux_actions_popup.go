@@ -3,6 +3,7 @@ package cmd
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -17,6 +18,8 @@ import (
 )
 
 type tmuxAction string
+
+var renameCurrentBranchTimeout = 3 * time.Second
 
 const (
 	tmuxActionShellSplit  tmuxAction = "shell_split"
@@ -397,9 +400,20 @@ func renameCurrentBranch(basePath string, renameTo string) error {
 	if renameTo == "" {
 		return fmt.Errorf("branch name required")
 	}
-	cmd := exec.Command("git", "branch", "-m", renameTo)
+	timeout := renameCurrentBranchTimeout
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, "git", "branch", "-m", renameTo)
 	cmd.Dir = basePath
+	cmd.Env = append(os.Environ(), "GIT_TERMINAL_PROMPT=0")
 	out, err := cmd.CombinedOutput()
+	if errors.Is(ctx.Err(), context.DeadlineExceeded) {
+		msg := strings.TrimSpace(string(out))
+		if msg != "" {
+			return fmt.Errorf("git branch rename timed out after %s: %s", timeout, msg)
+		}
+		return fmt.Errorf("git branch rename timed out after %s", timeout)
+	}
 	if err != nil {
 		msg := strings.TrimSpace(string(out))
 		if msg != "" {
