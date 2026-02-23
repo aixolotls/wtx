@@ -152,6 +152,16 @@ func TestTmuxActionsCommandWithAction_InjectsSourcePane(t *testing.T) {
 	}
 }
 
+func TestTmuxActionsCommandWithPathAndAction_IncludesPath(t *testing.T) {
+	got := tmuxActionsCommandWithPathAndAction("/usr/local/bin/wtx", "/tmp/repo path", tmuxActionRename)
+	if !strings.Contains(got, "rename_branch") {
+		t.Fatalf("expected rename action token in %q", got)
+	}
+	if !strings.Contains(got, "/tmp/repo path") {
+		t.Fatalf("expected base path in %q", got)
+	}
+}
+
 func TestRenameCurrentBranch_Succeeds(t *testing.T) {
 	repo := initTestRepo(t)
 	runGit(t, repo, "checkout", "-b", "before-rename")
