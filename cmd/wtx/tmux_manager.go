@@ -320,8 +320,9 @@ func applyWTXSessionDefaults(sessionID string, enableDestroyUnattached bool) {
 	if enableDestroyUnattached {
 		tmuxSetOption(sessionID, "destroy-unattached", "on")
 	}
-	// Disable mouse so normal terminal copy (Cmd+C) works.
-	tmuxSetOption(sessionID, "mouse", "off")
+	// Enable mouse so touchpad wheel events scroll pane output instead of shell history
+	// in terminals like Ghostty when running full-screen TUIs inside tmux.
+	tmuxSetOption(sessionID, "mouse", "on")
 	// Keep pane separators aligned with WTX brand colors instead of tmux defaults.
 	tmuxSetOption(sessionID, "pane-border-style", "fg=#3d2a5c")
 	tmuxSetOption(sessionID, "pane-active-border-style", "fg=#6a4b9c")
