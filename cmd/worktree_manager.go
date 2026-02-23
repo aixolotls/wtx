@@ -219,15 +219,6 @@ func commandErrorWithOutput(err error, out []byte) error {
 }
 
 func commandOutputInDir(dir string, path string, args ...string) ([]byte, error) {
-	if isGitBinary(path) {
-		out, handled, err := gitCommandOutputInDir(dir, args...)
-		if handled {
-			if err != nil {
-				return nil, err
-			}
-			return []byte(out), nil
-		}
-	}
 	cmd := exec.Command(path, args...)
 	cmd.Dir = dir
 	out, err := cmd.CombinedOutput()
