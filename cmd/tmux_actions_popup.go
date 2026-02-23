@@ -1,10 +1,12 @@
 package cmd
 
 import (
+	"bufio"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"regexp"
@@ -507,25 +509,26 @@ func renameCurrentBranchWithGoGit(basePath string, renameTo string) (bool, error
 }
 
 func runRenameBranchPopup(basePath string) error {
+	reader := bufio.NewReader(os.Stdin)
 	errMsg := ""
 	for {
-		branch := ""
-		form := newRenameBranchForm(&branch, errMsg)
-		model, err := tea.NewProgram(form).Run()
-		if err != nil {
-			return err
+		clearPopupScreen()
+		fmt.Println("Rename branch to")
+		if strings.TrimSpace(errMsg) != "" {
+			fmt.Println(errMsg)
 		}
-		f, ok := model.(*huh.Form)
-		if ok && (f.State == huh.StateAborted || f.State == huh.StateCompleted && strings.TrimSpace(branch) == "") {
-			if strings.TrimSpace(branch) == "" {
+		fmt.Print("> ")
+
+		branch, err := reader.ReadString('\n')
+		if err != nil {
+			if errors.Is(err, io.EOF) {
 				return nil
 			}
-			return nil
+			return err
 		}
 		branch = strings.TrimSpace(branch)
 		if branch == "" {
-			errMsg = "Branch name required."
-			continue
+			return nil
 		}
 		if err := renameCurrentBranch(basePath, branch); err != nil {
 			errMsg = err.Error()
