@@ -504,12 +504,17 @@ func refreshTmuxStatusNow() {
 	if _, err := exec.LookPath("tmux"); err != nil {
 		return
 	}
+	runRefresh := func(args ...string) error {
+		ctx, cancel := context.WithTimeout(context.Background(), 500*time.Millisecond)
+		defer cancel()
+		return exec.CommandContext(ctx, "tmux", args...).Run()
+	}
 	sessionID, err := currentSessionID()
 	if err == nil && strings.TrimSpace(sessionID) != "" {
-		_ = exec.Command("tmux", "refresh-client", "-S", "-t", sessionID).Run()
+		_ = runRefresh("refresh-client", "-S", "-t", sessionID)
 		return
 	}
-	_ = exec.Command("tmux", "refresh-client", "-S").Run()
+	_ = runRefresh("refresh-client", "-S")
 }
 
 func returnToWTX(basePath string, sourcePane string) error {
