@@ -376,7 +376,7 @@ func applyWTXSessionDefaults(sessionID string, enableDestroyUnattached bool) {
 	_ = exec.Command("tmux", "unbind-key", "-n", "C-a").Run()
 	_ = exec.Command("tmux", "unbind-key", "-n", "C-p").Run()
 	_ = exec.Command("tmux", "unbind-key", "-n", "C-l").Run()
-	_ = exec.Command("tmux", "unbind-key", "-n", "C-w").Run()
+	_ = exec.Command("tmux", "unbind-key", "-n", "C-b").Run()
 	_ = exec.Command("tmux", "unbind-key", "-n", "M-a").Run()
 	_ = exec.Command("tmux", "unbind-key", "-n", "M-A").Run()
 	configureTmuxActionBindings(sessionID, resolveAgentLifecycleBinary())
@@ -392,12 +392,12 @@ func configureTmuxActionBindings(sessionID string, wtxBin string) {
 	prCmd := tmuxActionsCommandWithAction(wtxBin, tmuxActionPR)
 	ideCmd := tmuxActionsCommandWithAction(wtxBin, tmuxActionIDE)
 
-	_ = exec.Command("tmux", "bind-key", "-n", "C-a", "popup", "-E", "-w", "60", "-h", "20", actionsPopupCmd).Run()
+	_ = exec.Command("tmux", "bind-key", "-n", "C-a", "popup", "-E", "-w", "72", "-h", "20", actionsPopupCmd).Run()
 	_ = exec.Command("tmux", "bind-key", "-n", "C-s", "run-shell", splitCmd).Run()
 	_ = exec.Command("tmux", "bind-key", "-n", "C-p", "run-shell", prCmd).Run()
 	_ = exec.Command("tmux", "bind-key", "-n", "C-l", "popup", "-E", "-w", "60", "-h", "20", ideCmd).Run()
 	backCmd := tmuxActionsCommandWithAction(wtxBin, tmuxActionBack)
-	_ = exec.Command("tmux", "bind-key", "-n", "C-w", "run-shell", backCmd).Run()
+	_ = exec.Command("tmux", "bind-key", "-n", "C-b", "run-shell", backCmd).Run()
 }
 
 func tmuxMouseEnabledForCurrentTerminal() bool {
