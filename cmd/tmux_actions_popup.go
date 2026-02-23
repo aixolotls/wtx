@@ -431,7 +431,7 @@ func launchRenameBranchPrompt(basePath string) error {
 		shellQuote(string(tmuxActionRename)),
 		shellQuote("%%"),
 	)
-	promptCmd := "run-shell " + renameCmd
+	promptCmd := "run-shell -b " + renameCmd
 	return exec.Command("tmux", "command-prompt", "-p", "Rename branch to", promptCmd).Run()
 }
 
