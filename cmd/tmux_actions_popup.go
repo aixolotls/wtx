@@ -15,6 +15,7 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/huh"
 	"github.com/charmbracelet/lipgloss"
+	"github.com/go-git/go-git/v5/plumbing"
 )
 
 type tmuxAction string
@@ -431,6 +432,13 @@ func renameCurrentBranch(basePath string, renameTo string) error {
 	if renameTo == "" {
 		return fmt.Errorf("branch name required")
 	}
+	if handled, err := renameCurrentBranchWithGoGit(basePath, renameTo); handled {
+		if err != nil {
+			return err
+		}
+		go refreshTmuxStatusNow()
+		return nil
+	}
 	timeout := renameCurrentBranchTimeout
 	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	defer cancel()
@@ -454,6 +462,48 @@ func renameCurrentBranch(basePath string, renameTo string) error {
 	}
 	go refreshTmuxStatusNow()
 	return nil
+}
+
+func renameCurrentBranchWithGoGit(basePath string, renameTo string) (bool, error) {
+	if isLinkedWorktreeDir(basePath) {
+		// Linked worktrees have separate HEAD files; keep CLI git fallback for parity.
+		return false, nil
+	}
+	repo, _, err := openRepo(basePath)
+	if err != nil {
+		return true, err
+	}
+	head, err := repo.Head()
+	if err != nil {
+		return true, err
+	}
+	if !head.Name().IsBranch() {
+		return true, fmt.Errorf("fatal: cannot rename branch while not on a branch")
+	}
+	newRef := plumbing.NewBranchReferenceName(renameTo)
+	if !newRef.IsBranch() || strings.TrimSpace(newRef.Short()) != renameTo {
+		return true, fmt.Errorf("fatal: '%s' is not a valid branch name", renameTo)
+	}
+	if head.Name() == newRef {
+		return true, nil
+	}
+	_, err = repo.Reference(newRef, true)
+	if err == nil {
+		return true, fmt.Errorf("fatal: a branch named '%s' already exists", renameTo)
+	}
+	if !errors.Is(err, plumbing.ErrReferenceNotFound) {
+		return true, err
+	}
+	if err := repo.Storer.SetReference(plumbing.NewHashReference(newRef, head.Hash())); err != nil {
+		return true, err
+	}
+	if err := repo.Storer.SetReference(plumbing.NewSymbolicReference(plumbing.HEAD, newRef)); err != nil {
+		return true, err
+	}
+	if err := repo.Storer.RemoveReference(head.Name()); err != nil {
+		return true, err
+	}
+	return true, nil
 }
 
 func runRenameBranchPopup(basePath string) error {

@@ -170,8 +170,23 @@ func TestRenameCurrentBranch_Succeeds(t *testing.T) {
 	}
 }
 
+func TestRenameCurrentBranch_TargetAlreadyExists(t *testing.T) {
+	repo := initTestRepo(t)
+	runGit(t, repo, "checkout", "-b", "before-rename")
+	runGit(t, repo, "checkout", "-b", "existing")
+	runGit(t, repo, "checkout", "before-rename")
+	err := renameCurrentBranch(repo, "existing")
+	if err == nil {
+		t.Fatalf("expected rename error when target exists")
+	}
+	if !strings.Contains(err.Error(), "already exists") {
+		t.Fatalf("expected clear exists error, got %v", err)
+	}
+}
+
 func TestRenameCurrentBranch_TimesOut(t *testing.T) {
 	repo := initTestRepo(t)
+	worktreeDir := initLinkedWorktree(t, repo)
 	prev := renameCurrentBranchTimeout
 	renameCurrentBranchTimeout = 100 * time.Millisecond
 	t.Cleanup(func() { renameCurrentBranchTimeout = prev })
@@ -191,7 +206,7 @@ func TestRenameCurrentBranch_TimesOut(t *testing.T) {
 	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
 
 	start := time.Now()
-	err := renameCurrentBranch(repo, "after-rename")
+	err := renameCurrentBranch(worktreeDir, "after-rename")
 	if err == nil {
 		t.Fatalf("expected timeout error")
 	}
@@ -201,6 +216,13 @@ func TestRenameCurrentBranch_TimesOut(t *testing.T) {
 	if time.Since(start) > 3*time.Second {
 		t.Fatalf("expected timeout to fail fast, took %s", time.Since(start))
 	}
+}
+
+func initLinkedWorktree(t *testing.T, repo string) string {
+	t.Helper()
+	worktreeDir := filepath.Join(t.TempDir(), "linked")
+	runGit(t, repo, "worktree", "add", "-b", "linked-rename-branch", worktreeDir)
+	return worktreeDir
 }
 
 func initTestRepo(t *testing.T) string {

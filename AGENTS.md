@@ -13,3 +13,5 @@
 
 - In action-driven flows, selecting an action that needs extra input should open a dedicated follow-up popup/screen instead of embedding the form in the action list.
 - For git command failures shown to users, surface the real stderr/stdout message (not just generic exit codes like `exit status 128`).
+- Prefer `go-git` for local branch metadata operations in popup flows (for example branch rename) to avoid interactive git subprocess hangs.
+- For tmux follow-up popups, avoid `run-shell` nesting and use a direct popup invocation path to prevent command/session leakage across windows.
