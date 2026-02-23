@@ -162,6 +162,12 @@ func TestTmuxActionsCommandWithPathAndAction_IncludesPath(t *testing.T) {
 	}
 }
 
+func TestParseTmuxAction_FromSecondPositionalArg(t *testing.T) {
+	if got := parseTmuxAction("rename_branch"); got != tmuxActionRename {
+		t.Fatalf("expected rename action, got %q", got)
+	}
+}
+
 func TestRenameCurrentBranch_Succeeds(t *testing.T) {
 	repo := initTestRepo(t)
 	runGit(t, repo, "checkout", "-b", "before-rename")

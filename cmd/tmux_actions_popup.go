@@ -321,6 +321,9 @@ func runTmuxActions(args []string) error {
 	}
 
 	if forcedAction != "" {
+		if forcedAction == tmuxActionRename {
+			return runRenameBranchPopup(basePath)
+		}
 		return runTmuxAction(basePath, sourcePane, forcedAction, "")
 	}
 
