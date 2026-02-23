@@ -1,8 +1,13 @@
 package cmd
 
 import (
+	"os"
+	"os/exec"
+	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
+	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
 )
@@ -145,4 +150,104 @@ func TestTmuxActionsCommandWithAction_InjectsSourcePane(t *testing.T) {
 	if want := "back_to_wtx"; !strings.Contains(got, want) {
 		t.Fatalf("expected back action token %q in %q", want, got)
 	}
+}
+
+func TestTmuxActionsCommandWithPathAndAction(t *testing.T) {
+	got := tmuxActionsCommandWithPathAndAction("/usr/local/bin/wtx", "/tmp/repo path", tmuxActionRename)
+	if want := "tmux-actions"; !strings.Contains(got, want) {
+		t.Fatalf("expected %q in %q", want, got)
+	}
+	if want := "'/tmp/repo path'"; !strings.Contains(got, want) {
+		t.Fatalf("expected quoted path %q in %q", want, got)
+	}
+	if want := "rename_branch"; !strings.Contains(got, want) {
+		t.Fatalf("expected action %q in %q", want, got)
+	}
+}
+
+func TestRenameCurrentBranch_Succeeds(t *testing.T) {
+	repo := initRenameTestRepo(t)
+	runGitInRepo(t, repo, "checkout", "-b", "before-rename")
+
+	if err := renameCurrentBranch(repo, "after-rename"); err != nil {
+		t.Fatalf("renameCurrentBranch failed: %v", err)
+	}
+
+	head := strings.TrimSpace(runGitOutput(t, repo, "rev-parse", "--abbrev-ref", "HEAD"))
+	if head != "after-rename" {
+		t.Fatalf("expected HEAD to be after-rename, got %q", head)
+	}
+}
+
+func TestRenameCurrentBranch_TimesOut(t *testing.T) {
+	repo := initRenameTestRepo(t)
+	runGitInRepo(t, repo, "checkout", "-b", "before-rename")
+
+	prev := renameCurrentBranchTimeout
+	renameCurrentBranchTimeout = 100 * time.Millisecond
+	t.Cleanup(func() {
+		renameCurrentBranchTimeout = prev
+	})
+
+	fakeBinDir := t.TempDir()
+	gitName := "git"
+	script := "#!/bin/sh\nsleep 1\n"
+	if runtime.GOOS == "windows" {
+		gitName = "git.bat"
+		script = "@echo off\r\nping -n 2 127.0.0.1 >NUL\r\n"
+	}
+	fakeGitPath := filepath.Join(fakeBinDir, gitName)
+	if err := os.WriteFile(fakeGitPath, []byte(script), 0o755); err != nil {
+		t.Fatalf("write fake git: %v", err)
+	}
+	t.Setenv("PATH", fakeBinDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+
+	start := time.Now()
+	err := renameCurrentBranch(repo, "after-rename")
+	if err == nil {
+		t.Fatalf("expected timeout error")
+	}
+	if !strings.Contains(err.Error(), "timed out") {
+		t.Fatalf("expected timeout message, got %v", err)
+	}
+	if elapsed := time.Since(start); elapsed > 3*time.Second {
+		t.Fatalf("expected fail-fast timeout; took %s", elapsed)
+	}
+}
+
+func initRenameTestRepo(t *testing.T) string {
+	t.Helper()
+	dir := t.TempDir()
+	runGitInRepo(t, dir, "init")
+	runGitInRepo(t, dir, "config", "user.name", "Test User")
+	runGitInRepo(t, dir, "config", "user.email", "test@example.com")
+
+	readmePath := filepath.Join(dir, "README.md")
+	if err := os.WriteFile(readmePath, []byte("seed\n"), 0o644); err != nil {
+		t.Fatalf("write README: %v", err)
+	}
+	runGitInRepo(t, dir, "add", "README.md")
+	runGitInRepo(t, dir, "commit", "-m", "seed")
+	return dir
+}
+
+func runGitInRepo(t *testing.T, dir string, args ...string) {
+	t.Helper()
+	cmd := exec.Command("git", args...)
+	cmd.Dir = dir
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("git %v failed: %v\n%s", args, err, strings.TrimSpace(string(out)))
+	}
+}
+
+func runGitOutput(t *testing.T, dir string, args ...string) string {
+	t.Helper()
+	cmd := exec.Command("git", args...)
+	cmd.Dir = dir
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("git %v failed: %v\n%s", args, err, strings.TrimSpace(string(out)))
+	}
+	return string(out)
 }
