@@ -398,6 +398,13 @@ func runTmuxAction(basePath string, sourcePane string, action tmuxAction, rename
 }
 
 func runRenameBranchFollowup(basePath string) error {
+	if tmuxAvailable() {
+		return launchRenameBranchPopup(basePath)
+	}
+	return runRenameBranchPopup(basePath)
+}
+
+func launchRenameBranchPopup(basePath string) error {
 	bin := strings.TrimSpace(resolveAgentLifecycleBinary())
 	if bin == "" {
 		discovered, err := exec.LookPath("wtx")
@@ -406,11 +413,13 @@ func runRenameBranchFollowup(basePath string) error {
 		}
 		bin = discovered
 	}
-	cmd := exec.Command(bin, "tmux-actions", basePath, string(tmuxActionRename))
-	cmd.Stdin = os.Stdin
-	cmd.Stdout = os.Stdout
-	cmd.Stderr = os.Stderr
-	return cmd.Run()
+	renameCmd := fmt.Sprintf("%s tmux-actions %s %s",
+		shellQuote(bin),
+		shellQuote(basePath),
+		shellQuote(string(tmuxActionRename)),
+	)
+	popupCmd := fmt.Sprintf("tmux display-popup -E -w 60 -h 10 %s", shellQuote(renameCmd))
+	return exec.Command("tmux", "run-shell", "-b", popupCmd).Run()
 }
 
 func renameCurrentBranch(basePath string, renameTo string) error {
