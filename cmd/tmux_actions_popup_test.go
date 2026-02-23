@@ -79,12 +79,12 @@ func TestParseTmuxAction_ShellWindow(t *testing.T) {
 	}
 }
 
-func TestTmuxActionsModel_CtrlWSelectsBack(t *testing.T) {
+func TestTmuxActionsModel_CtrlBSelectsBack(t *testing.T) {
 	m := newTmuxActionsModel("/tmp", true, false, false)
-	updatedModel, _ := m.Update(tea.KeyMsg{Type: tea.KeyCtrlW})
+	updatedModel, _ := m.Update(tea.KeyMsg{Type: tea.KeyCtrlB})
 	updated := updatedModel.(tmuxActionsModel)
 	if updated.chosen != tmuxActionBack {
-		t.Fatalf("expected ctrl+w to choose back action, got %q", updated.chosen)
+		t.Fatalf("expected ctrl+b to choose back action, got %q", updated.chosen)
 	}
 }
 
@@ -134,11 +134,128 @@ func TestTmuxActionsModel_ShowsShellTabActionDisabledWhenUnavailable(t *testing.
 func TestTmuxActionsModel_ViewShowsShortcutHints(t *testing.T) {
 	m := newTmuxActionsModel("/tmp", true, false, false)
 	view := m.View()
-	if !strings.Contains(view, "ctrl+w back") {
-		t.Fatalf("expected ctrl+w hint in view, got %q", view)
+	if !strings.Contains(view, "/back") {
+		t.Fatalf("expected /back alias in view, got %q", view)
 	}
-	if !strings.Contains(view, "ctrl+r rename") {
-		t.Fatalf("expected ctrl+r hint in view, got %q", view)
+	if !strings.Contains(view, "ctrl+b") {
+		t.Fatalf("expected ctrl+b hint in view rows, got %q", view)
+	}
+	if !strings.Contains(view, "ctrl+r") {
+		t.Fatalf("expected ctrl+r hint in view rows, got %q", view)
+	}
+	if !strings.Contains(view, "enter run • ↑/↓ navigate • esc cancel") {
+		t.Fatalf("expected minimal footer hint, got %q", view)
+	}
+}
+
+func TestTmuxActionsModel_LockedSlashAndBackspace(t *testing.T) {
+	m := newTmuxActionsModel("/tmp", true, false, false)
+
+	updatedModel, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'/'}})
+	updated := updatedModel.(tmuxActionsModel)
+	if updated.query != "" {
+		t.Fatalf("expected leading slash rune to be ignored, got %q", updated.query)
+	}
+
+	updatedModel, _ = updated.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'p', 'r'}})
+	updated = updatedModel.(tmuxActionsModel)
+	if updated.query != "pr" {
+		t.Fatalf("expected query to be pr, got %q", updated.query)
+	}
+
+	updatedModel, _ = updated.Update(tea.KeyMsg{Type: tea.KeyBackspace})
+	updated = updatedModel.(tmuxActionsModel)
+	if updated.query != "p" {
+		t.Fatalf("expected query to backspace to p, got %q", updated.query)
+	}
+
+	updatedModel, _ = updated.Update(tea.KeyMsg{Type: tea.KeyBackspace})
+	updated = updatedModel.(tmuxActionsModel)
+	if updated.query != "" {
+		t.Fatalf("expected query to backspace to empty, got %q", updated.query)
+	}
+
+	updatedModel, _ = updated.Update(tea.KeyMsg{Type: tea.KeyBackspace})
+	updated = updatedModel.(tmuxActionsModel)
+	if updated.query != "" {
+		t.Fatalf("expected backspace on empty query to do nothing, got %q", updated.query)
+	}
+}
+
+func TestTmuxActionsModel_EnterExecutesExactAlias(t *testing.T) {
+	m := newTmuxActionsModel("/tmp", true, false, false)
+	m.query = "rename"
+	m.rebuildFiltered()
+
+	updatedModel, _ := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	updated := updatedModel.(tmuxActionsModel)
+	if updated.chosen != tmuxActionRename {
+		t.Fatalf("expected exact alias to choose rename, got %q", updated.chosen)
+	}
+}
+
+func TestTmuxActionsModel_ViewRemovesSearchAndCaret(t *testing.T) {
+	m := newTmuxActionsModel("/tmp", true, false, false)
+	view := m.View()
+
+	if strings.Contains(view, "Actions") {
+		t.Fatalf("did not expect Actions title in view, got %q", view)
+	}
+	if strings.Contains(view, "Search:") {
+		t.Fatalf("did not expect Search label in view, got %q", view)
+	}
+	if strings.Contains(view, "\n> ") {
+		t.Fatalf("did not expect caret glyph row prefix in view, got %q", view)
+	}
+	if !strings.Contains(view, "/command") {
+		t.Fatalf("expected slash input placeholder in view, got %q", view)
+	}
+}
+
+func TestTmuxActionsModel_ViewRendersAliasDescriptionAndKeybinding(t *testing.T) {
+	m := newTmuxActionsModel("/tmp", true, false, false)
+	view := m.View()
+
+	if !strings.Contains(view, "/ide") {
+		t.Fatalf("expected alias column to include /ide, got %q", view)
+	}
+	if !strings.Contains(view, "Open IDE") {
+		t.Fatalf("expected description column to include Open IDE, got %q", view)
+	}
+	if !strings.Contains(view, "ctrl+l") {
+		t.Fatalf("expected keybinding column to include ctrl+l, got %q", view)
+	}
+}
+
+func TestSortTmuxActionItems_UnavailableLastThenAlias(t *testing.T) {
+	items := []tmuxActionItem{
+		{Alias: "zeta", Disabled: false},
+		{Alias: "beta", Disabled: true},
+		{Alias: "alpha", Disabled: false},
+		{Alias: "gamma", Disabled: true},
+	}
+	sortTmuxActionItems(items)
+
+	got := []string{
+		items[0].Alias,
+		items[1].Alias,
+		items[2].Alias,
+		items[3].Alias,
+	}
+	want := []string{"alpha", "zeta", "beta", "gamma"}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("expected sorted aliases %v, got %v", want, got)
+		}
+	}
+}
+
+func TestPRSummaryHasNumber(t *testing.T) {
+	if !prSummaryHasNumber("PR #12 | CI ok 3/3 | GH mergeable | Review 1/1 u:0") {
+		t.Fatalf("expected PR summary with number to match")
+	}
+	if prSummaryHasNumber("PR - | CI - | GH - | Review -") {
+		t.Fatalf("expected empty PR summary to not match")
 	}
 }
 

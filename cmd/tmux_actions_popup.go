@@ -2,12 +2,12 @@ package cmd
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
 	"os/exec"
 	"regexp"
+	"sort"
 	"strings"
 	"time"
 	"unicode/utf8"
@@ -34,10 +34,13 @@ const (
 )
 
 type tmuxActionItem struct {
-	Label    string
-	Action   tmuxAction
-	Keywords string
-	Disabled bool
+	Alias       string
+	Label       string
+	Description string
+	Keybinding  string
+	Action      tmuxAction
+	Keywords    string
+	Disabled    bool
 }
 
 type tmuxActionsModel struct {
@@ -48,7 +51,6 @@ type tmuxActionsModel struct {
 	query      string
 	chosen     tmuxAction
 	cancel     bool
-	prKnown    bool
 	updateHint string
 	renameErr  string
 	renameTo   string
@@ -60,16 +62,15 @@ func newTmuxActionsModel(basePath string, prAvailable bool, canOpenITermTab bool
 	windowTerminalName := terminalWindowProgramLabel()
 	windowTerminalKeyword := strings.ToLower(strings.TrimSpace(windowTerminalName))
 	items := []tmuxActionItem{
-		{Label: "Back to WTX (stop agent)", Action: tmuxActionBack, Keywords: "back return wtx unlock ctrl+w"},
-		{Label: "Open shell (split down)", Action: tmuxActionShellSplit, Keywords: "shell split pane ctrl+s s"},
-		{Label: fmt.Sprintf("Open shell (new %s tab)", terminalName), Action: tmuxActionShellTab, Keywords: strings.TrimSpace("shell tab iterm ctrl+t t " + terminalKeyword), Disabled: !canOpenITermTab},
-		{Label: fmt.Sprintf("Open shell (new %s window)", windowTerminalName), Action: tmuxActionShellWindow, Keywords: strings.TrimSpace("shell window iterm terminal ctrl+n n " + terminalKeyword + " " + windowTerminalKeyword), Disabled: !canOpenShellWindow},
-		{Label: "Rename branch", Action: tmuxActionRename, Keywords: "rename branch ctrl+r r"},
+		{Alias: "back", Label: "Back to WTX", Description: "Back to WTX (stop agent)", Keybinding: "ctrl+b", Action: tmuxActionBack, Keywords: "return wtx unlock"},
+		{Alias: "ide", Label: "Open IDE", Description: "Open IDE", Keybinding: "ctrl+l", Action: tmuxActionIDE, Keywords: "editor code"},
+		{Alias: "pr", Label: "Open PR", Description: "Open PR", Keybinding: "ctrl+p", Action: tmuxActionPR, Keywords: "pull request github", Disabled: !prAvailable},
+		{Alias: "rename", Label: "Rename branch", Description: "Rename branch", Keybinding: "ctrl+r", Action: tmuxActionRename, Keywords: "branch"},
+		{Alias: "shell", Label: "Open shell", Description: "Open shell (split down)", Keybinding: "ctrl+s", Action: tmuxActionShellSplit, Keywords: "split pane s"},
+		{Alias: "tab", Label: fmt.Sprintf("Open shell tab (%s)", terminalName), Description: fmt.Sprintf("Open shell (new %s tab)", terminalName), Keybinding: "ctrl+t", Action: tmuxActionShellTab, Keywords: strings.TrimSpace("shell iterm t " + terminalKeyword), Disabled: !canOpenITermTab},
+		{Alias: "window", Label: fmt.Sprintf("Open shell window (%s)", windowTerminalName), Description: fmt.Sprintf("Open shell (new %s window)", windowTerminalName), Keybinding: "ctrl+n", Action: tmuxActionShellWindow, Keywords: strings.TrimSpace("shell iterm terminal n " + terminalKeyword + " " + windowTerminalKeyword), Disabled: !canOpenShellWindow},
 	}
-	items = append(items,
-		tmuxActionItem{Label: "Open IDE", Action: tmuxActionIDE, Keywords: "ide editor code ctrl+l l"},
-		tmuxActionItem{Label: "Open PR", Action: tmuxActionPR, Keywords: "pr pull request github ctrl+p p", Disabled: !prAvailable},
-	)
+	sortTmuxActionItems(items)
 	model := tmuxActionsModel{
 		basePath: basePath,
 		items:    items,
@@ -78,26 +79,12 @@ func newTmuxActionsModel(basePath string, prAvailable bool, canOpenITermTab bool
 	return model
 }
 
-type prAvailabilityMsg struct {
-	available bool
-}
-
 func (m tmuxActionsModel) Init() tea.Cmd {
-	return tea.Batch(checkPRAvailabilityCmd(m.basePath), checkInteractiveUpdateHintCmd())
+	return checkInteractiveUpdateHintCmd()
 }
 
 func (m tmuxActionsModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
-	case prAvailabilityMsg:
-		m.prKnown = true
-		for i := range m.items {
-			if m.items[i].Action == tmuxActionPR {
-				m.items[i].Disabled = !msg.available
-				break
-			}
-		}
-		m.rebuildFiltered()
-		return m, nil
 	case interactiveUpdateHintMsg:
 		m.updateHint = strings.TrimSpace(msg.hint)
 		return m, nil
@@ -106,7 +93,7 @@ func (m tmuxActionsModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case "ctrl+c", "esc":
 			m.cancel = true
 			return m, tea.Quit
-		case "ctrl+w":
+		case "ctrl+b":
 			return m.selectAction(tmuxActionBack)
 		case "ctrl+s":
 			return m.selectAction(tmuxActionShellSplit)
@@ -146,6 +133,9 @@ func (m tmuxActionsModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 			return m, nil
 		case "enter":
+			if action, ok := m.exactAliasAction(); ok {
+				return m.selectAction(action)
+			}
 			selected, ok := m.selectedItem()
 			if !ok {
 				m.cancel = true
@@ -166,7 +156,11 @@ func (m tmuxActionsModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				if len(runes) == 0 {
 					return m, nil
 				}
-				m.query += strings.ToLower(string(runes))
+				value := strings.ToLower(string(runes))
+				if value == "/" && m.query == "" {
+					return m, nil
+				}
+				m.query += value
 				m.rebuildFiltered()
 				return m, nil
 			}
@@ -177,48 +171,41 @@ func (m tmuxActionsModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 func (m tmuxActionsModel) View() string {
 	var b strings.Builder
-	titleStyle := lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("#7D56F4"))
 	selectedStyle := lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("#7D56F4"))
 	normalStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("251"))
 	disabledStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("240"))
 	dimStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("245"))
 
-	b.WriteString(titleStyle.Render("Actions"))
-	b.WriteString("\n")
-	b.WriteString(dimStyle.Render("Search: " + m.query))
+	queryLine := "/" + m.query
+	if strings.TrimSpace(m.query) == "" {
+		queryLine = "/command"
+	}
+	b.WriteString(dimStyle.Render(queryLine))
 	b.WriteString("\n")
 	b.WriteString(dimStyle.Render("────────────────────────────────────"))
 	b.WriteString("\n")
 	if len(m.filtered) == 0 {
-		b.WriteString(disabledStyle.Render("  No matching actions"))
+		b.WriteString(disabledStyle.Render("No matching actions"))
 		b.WriteString("\n")
 	}
 	for listIndex, itemIndex := range m.filtered {
 		item := m.items[itemIndex]
-		prefix := "  "
-		if listIndex == m.index {
-			prefix = "> "
-		}
-		label := item.Label
+		row := fmt.Sprintf("/%-8s %-32s %s", item.Alias, item.Description, item.Keybinding)
 		if item.Disabled {
-			if item.Action == tmuxActionPR && !m.prKnown {
-				label += " (checking...)"
-			} else {
-				label += " (unavailable)"
-			}
+			row += " (unavailable)"
 		}
 		switch {
 		case item.Disabled:
-			b.WriteString(disabledStyle.Render(prefix + label))
+			b.WriteString(disabledStyle.Render(row))
 		case listIndex == m.index:
-			b.WriteString(selectedStyle.Render(prefix + label))
+			b.WriteString(selectedStyle.Render(row))
 		default:
-			b.WriteString(normalStyle.Render(prefix + label))
+			b.WriteString(normalStyle.Render(row))
 		}
 		b.WriteString("\n")
 	}
 	b.WriteString("\n")
-	b.WriteString(dimStyle.Render("ctrl+w back • ctrl+s shell • ctrl+t tab • ctrl+n window • ctrl+l IDE • ctrl+p PR • ctrl+r rename • ↑/↓ navigate • enter select • esc cancel"))
+	b.WriteString(dimStyle.Render("enter run • ↑/↓ navigate • esc cancel"))
 	if m.updateHint != "" {
 		b.WriteString("\n")
 		b.WriteString(lipgloss.NewStyle().Foreground(lipgloss.Color("240")).Render(m.updateHint))
@@ -270,7 +257,7 @@ func actionMatchesQuery(item tmuxActionItem, query string) bool {
 	if query == "" {
 		return true
 	}
-	corpus := strings.ToLower(strings.TrimSpace(item.Label + " " + item.Keywords + " " + string(item.Action)))
+	corpus := strings.ToLower(strings.TrimSpace(item.Alias + " " + item.Label + " " + item.Keywords + " " + string(item.Action)))
 	if strings.Contains(corpus, query) {
 		return true
 	}
@@ -281,6 +268,22 @@ func actionMatchesQuery(item tmuxActionItem, query string) bool {
 		}
 	}
 	return false
+}
+
+func (m tmuxActionsModel) exactAliasAction() (tmuxAction, bool) {
+	query := strings.TrimSpace(strings.ToLower(m.query))
+	if query == "" {
+		return "", false
+	}
+	for _, item := range m.items {
+		if item.Disabled {
+			continue
+		}
+		if strings.EqualFold(item.Alias, query) {
+			return item.Action, true
+		}
+	}
+	return "", false
 }
 
 func (m tmuxActionsModel) selectedItem() (tmuxActionItem, bool) {
@@ -328,7 +331,8 @@ func runTmuxActions(args []string) error {
 
 	canOpenITermTab := canOpenShellInITermTab()
 	canOpenWindow := canOpenShellWindow()
-	program := tea.NewProgram(newTmuxActionsModel(basePath, false, canOpenITermTab, canOpenWindow))
+	prAvailable := hasCurrentPRFromStatusSummary(basePath)
+	program := tea.NewProgram(newTmuxActionsModel(basePath, prAvailable, canOpenITermTab, canOpenWindow))
 	finalModel, err := program.Run()
 	if err != nil {
 		return err
@@ -580,34 +584,21 @@ func returnToWTX(basePath string, sourcePane string) error {
 	return exec.Command("tmux", "respawn-pane", "-k", "-c", basePath, "-t", "!", command).Run()
 }
 
-func hasCurrentPR(path string) bool {
-	if strings.TrimSpace(path) == "" {
+func hasCurrentPRFromStatusSummary(path string) bool {
+	path = strings.TrimSpace(path)
+	if path == "" {
 		return false
 	}
-	if _, err := exec.LookPath("gh"); err != nil {
+	branch := currentBranchInWorktree(path)
+	if branch == "" {
 		return false
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 1200*time.Millisecond)
-	defer cancel()
-	cmd := exec.CommandContext(ctx, "gh", "pr", "view", "--json", "number")
-	cmd.Dir = path
-	out, err := cmd.Output()
-	if err != nil {
-		return false
-	}
-	var payload struct {
-		Number int `json:"number"`
-	}
-	if err := json.Unmarshal(out, &payload); err != nil {
-		return false
-	}
-	return payload.Number > 0
+	summary := ghSummaryForBranchCached(path, branch)
+	return prSummaryHasNumber(summary)
 }
 
-func checkPRAvailabilityCmd(path string) tea.Cmd {
-	return func() tea.Msg {
-		return prAvailabilityMsg{available: hasCurrentPR(path)}
-	}
+func prSummaryHasNumber(summary string) bool {
+	return prSummaryLabelRe.MatchString(strings.TrimSpace(summary))
 }
 
 func canOpenShellInITermTab() bool {
@@ -738,6 +729,16 @@ func resolveTmuxActionsBasePathFromCandidates(paths ...string) string {
 }
 
 var actionTokenSplitRe = regexp.MustCompile(`[^a-z0-9]+`)
+var prSummaryLabelRe = regexp.MustCompile(`\bPR\s+#\d+\b`)
+
+func sortTmuxActionItems(items []tmuxActionItem) {
+	sort.SliceStable(items, func(i, j int) bool {
+		if items[i].Disabled != items[j].Disabled {
+			return !items[i].Disabled
+		}
+		return strings.ToLower(items[i].Alias) < strings.ToLower(items[j].Alias)
+	})
+}
 
 func terminalProgramLabel() string {
 	term := resolveSessionParentTerminalProgram()
