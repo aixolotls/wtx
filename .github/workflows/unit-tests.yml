@@ -23,7 +23,7 @@ jobs:
           cache: true
 
       - name: Run unit tests
-        run: go test -v ./...
+        run: go test -v -count=1 -parallel=10 ./...
 
   e2e:
     runs-on: ubuntu-latest
@@ -38,4 +38,7 @@ jobs:
           cache: true
 
       - name: Run E2E tests
+        env:
+          WTX_E2E_COUNT: "1"
+          WTX_E2E_PARALLEL: "10"
         run: make e2e
