@@ -450,3 +450,193 @@ func TestTestModeBypassesInteractiveUI(t *testing.T) {
 	}
 	assertContains(t, result.out, "interactive UI bypassed")
 }
+
+func TestE2ECheckoutNewBranchWithFetchOnIsolatedRepo(t *testing.T) {
+	root := t.TempDir()
+	originBare := filepath.Join(root, "origin.git")
+	seed := filepath.Join(root, "seed")
+	clone := filepath.Join(root, "clone")
+
+	runCmd(t, root, nil, "git", "init", "--bare", originBare)
+	runCmd(t, root, nil, "git", "init", seed)
+	runCmd(t, seed, nil, "git", "checkout", "-B", "main")
+	runCmd(t, seed, nil, "git", "config", "user.email", "e2e@example.test")
+	runCmd(t, seed, nil, "git", "config", "user.name", "WTX E2E")
+	if err := os.WriteFile(filepath.Join(seed, "README.md"), []byte("seed\n"), 0o644); err != nil {
+		t.Fatalf("write seed file: %v", err)
+	}
+	runCmd(t, seed, nil, "git", "add", "README.md")
+	runCmd(t, seed, nil, "git", "commit", "-m", "init main")
+	runCmd(t, seed, nil, "git", "remote", "add", "origin", originBare)
+	runCmd(t, seed, nil, "git", "push", "-u", "origin", "main")
+
+	runCmd(t, root, nil, "git", "clone", originBare, clone)
+	runCmd(t, clone, nil, "git", "config", "user.email", "e2e@example.test")
+	runCmd(t, clone, nil, "git", "config", "user.name", "WTX E2E")
+
+	managedRoot := clone + ".wt"
+	managedWorktree := filepath.Join(managedRoot, "wt.1")
+	if err := os.MkdirAll(managedRoot, 0o755); err != nil {
+		t.Fatalf("mkdir managed root: %v", err)
+	}
+	runCmd(t, clone, nil, "git", "worktree", "add", "-b", "slot/one", managedWorktree, "main")
+
+	home := t.TempDir()
+	writeConfig(t, home, "true")
+	env := testEnv(home)
+	branch := "feature/e2e-isolated"
+	result := runWTX(t, clone, env, "checkout", "-b", branch, "--from", "origin/main", "--fetch")
+	if result.err != nil {
+		t.Fatalf("e2e checkout failed: %v\n%s", result.err, result.out)
+	}
+
+	rootBranch := currentBranch(t, clone)
+	slotBranch := currentBranch(t, managedWorktree)
+	if rootBranch != branch && slotBranch != branch {
+		t.Fatalf("expected %q to be checked out in a worktree, got root=%q slot=%q", branch, rootBranch, slotBranch)
+	}
+	runCmd(t, clone, nil, "git", "show-ref", "--verify", "refs/heads/"+branch)
+}
+
+func TestE2ECreateBranchFailsOnUnbornHeadWithActionableError(t *testing.T) {
+	repo := filepath.Join(t.TempDir(), "unborn")
+	runCmd(t, "", nil, "git", "init", repo)
+	runCmd(t, repo, nil, "git", "config", "user.email", "e2e@example.test")
+	runCmd(t, repo, nil, "git", "config", "user.name", "WTX E2E")
+
+	home := t.TempDir()
+	writeConfig(t, home, "true")
+	env := testEnv(home)
+
+	result := runWTX(t, repo, env, "checkout", "-b", "feature/unborn-check")
+	if result.err == nil {
+		t.Fatalf("expected unborn-head checkout to fail, got success\n%s", result.out)
+	}
+	assertContains(t, result.out, "no remotes are configured")
+	assertContains(t, result.out, "use --from <local-branch>")
+}
+
+func TestE2ECreateBranchWithoutOriginCanUseLocalBaseRef(t *testing.T) {
+	repo := filepath.Join(t.TempDir(), "no-origin")
+	runCmd(t, "", nil, "git", "init", repo)
+	runCmd(t, repo, nil, "git", "checkout", "-B", "main")
+	runCmd(t, repo, nil, "git", "config", "user.email", "e2e@example.test")
+	runCmd(t, repo, nil, "git", "config", "user.name", "WTX E2E")
+	if err := os.WriteFile(filepath.Join(repo, "README.md"), []byte("local\n"), 0o644); err != nil {
+		t.Fatalf("write repo file: %v", err)
+	}
+	runCmd(t, repo, nil, "git", "add", "README.md")
+	runCmd(t, repo, nil, "git", "commit", "-m", "init")
+
+	home := t.TempDir()
+	writeConfig(t, home, "true")
+	env := testEnv(home)
+
+	defaultOK := runWTX(t, repo, env, "checkout", "-b", "feature/no-origin-default")
+	if defaultOK.err != nil {
+		t.Fatalf("expected no-origin default checkout to succeed: %v\n%s", defaultOK.err, defaultOK.out)
+	}
+	runCmd(t, repo, nil, "git", "show-ref", "--verify", "refs/heads/feature/no-origin-default")
+
+	ok := runWTX(t, repo, env, "checkout", "-b", "feature/no-origin-local-base", "--from", "main", "--no-fetch")
+	if ok.err != nil {
+		t.Fatalf("expected checkout with --from main to succeed: %v\n%s", ok.err, ok.out)
+	}
+	runCmd(t, repo, nil, "git", "show-ref", "--verify", "refs/heads/feature/no-origin-local-base")
+}
+
+func TestE2ECheckoutFailsInNonGitDirectory(t *testing.T) {
+	workDir := t.TempDir()
+	home := t.TempDir()
+	writeConfig(t, home, "true")
+	env := testEnv(home)
+
+	result := runWTX(t, workDir, env, "checkout", "main")
+	if result.err == nil {
+		t.Fatalf("expected checkout to fail outside git repo\n%s", result.out)
+	}
+	assertContains(t, result.out, "not in a git repository")
+}
+
+func TestE2ECreateBranchFromDetachedHeadWithExplicitBase(t *testing.T) {
+	repo := filepath.Join(t.TempDir(), "detached")
+	runCmd(t, "", nil, "git", "init", repo)
+	runCmd(t, repo, nil, "git", "checkout", "-B", "main")
+	runCmd(t, repo, nil, "git", "config", "user.email", "e2e@example.test")
+	runCmd(t, repo, nil, "git", "config", "user.name", "WTX E2E")
+	if err := os.WriteFile(filepath.Join(repo, "README.md"), []byte("detached\n"), 0o644); err != nil {
+		t.Fatalf("write repo file: %v", err)
+	}
+	runCmd(t, repo, nil, "git", "add", "README.md")
+	runCmd(t, repo, nil, "git", "commit", "-m", "init")
+	runCmd(t, repo, nil, "git", "checkout", "--detach", "HEAD")
+
+	home := t.TempDir()
+	writeConfig(t, home, "true")
+	env := testEnv(home)
+
+	result := runWTX(t, repo, env, "checkout", "-b", "feature/from-detached", "--from", "main", "--no-fetch")
+	if result.err != nil {
+		t.Fatalf("expected detached-head create checkout to succeed: %v\n%s", result.err, result.out)
+	}
+	runCmd(t, repo, nil, "git", "show-ref", "--verify", "refs/heads/feature/from-detached")
+}
+
+func TestE2ECreateBranchSkipsDirtyWorktreeSlot(t *testing.T) {
+	repo := filepath.Join(t.TempDir(), "dirty")
+	runCmd(t, "", nil, "git", "init", repo)
+	runCmd(t, repo, nil, "git", "checkout", "-B", "main")
+	runCmd(t, repo, nil, "git", "config", "user.email", "e2e@example.test")
+	runCmd(t, repo, nil, "git", "config", "user.name", "WTX E2E")
+	if err := os.WriteFile(filepath.Join(repo, "README.md"), []byte("dirty\n"), 0o644); err != nil {
+		t.Fatalf("write repo file: %v", err)
+	}
+	runCmd(t, repo, nil, "git", "add", "README.md")
+	runCmd(t, repo, nil, "git", "commit", "-m", "init")
+
+	managedRoot := repo + ".wt"
+	managedWorktree := filepath.Join(managedRoot, "wt.1")
+	if err := os.MkdirAll(managedRoot, 0o755); err != nil {
+		t.Fatalf("mkdir managed root: %v", err)
+	}
+	runCmd(t, repo, nil, "git", "worktree", "add", "-b", "slot/one", managedWorktree, "main")
+
+	if err := os.WriteFile(filepath.Join(repo, "README.md"), []byte("dirty-modified\n"), 0o644); err != nil {
+		t.Fatalf("modify root file: %v", err)
+	}
+
+	home := t.TempDir()
+	writeConfig(t, home, "true")
+	env := testEnv(home)
+
+	result := runWTX(t, repo, env, "checkout", "-b", "feature/dirty-skip", "--from", "main", "--no-fetch")
+	if result.err != nil {
+		t.Fatalf("expected checkout to succeed with dirty root and clean slot: %v\n%s", result.err, result.out)
+	}
+	rootBranch := currentBranch(t, repo)
+	slotBranch := currentBranch(t, managedWorktree)
+	if rootBranch == "feature/dirty-skip" {
+		t.Fatalf("expected dirty root worktree to be skipped, but root switched branches")
+	}
+	if slotBranch != "feature/dirty-skip" {
+		t.Fatalf("expected clean slot to switch to feature/dirty-skip, got %q", slotBranch)
+	}
+}
+
+func TestE2ECreateBranchFailsInInitializedEmptyRepo(t *testing.T) {
+	repo := filepath.Join(t.TempDir(), "initialized-empty")
+	runCmd(t, "", nil, "git", "init", repo)
+	runCmd(t, repo, nil, "git", "config", "user.email", "e2e@example.test")
+	runCmd(t, repo, nil, "git", "config", "user.name", "WTX E2E")
+
+	home := t.TempDir()
+	writeConfig(t, home, "true")
+	env := testEnv(home)
+
+	result := runWTX(t, repo, env, "checkout", "-b", "feature/empty-repo")
+	if result.err == nil {
+		t.Fatalf("expected initialized-empty checkout to fail, got success\n%s", result.out)
+	}
+	assertContains(t, result.out, "no remotes are configured")
+	assertContains(t, result.out, "use --from <local-branch>")
+}
