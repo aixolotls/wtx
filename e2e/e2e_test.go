@@ -197,6 +197,7 @@ func currentBranch(t *testing.T, path string) string {
 }
 
 func TestCompletionInstallAndStatusHermetic(t *testing.T) {
+	t.Parallel()
 	home := t.TempDir()
 	env := testEnv(home)
 	workDir := t.TempDir()
@@ -243,6 +244,7 @@ func TestCompletionInstallAndStatusHermetic(t *testing.T) {
 }
 
 func TestCheckoutExistingBranchNonInteractive(t *testing.T) {
+	t.Parallel()
 	repo := setupRepoWithManagedWorktree(t)
 	home := t.TempDir()
 	writeConfig(t, home, "true")
@@ -261,6 +263,7 @@ func TestCheckoutExistingBranchNonInteractive(t *testing.T) {
 }
 
 func TestCheckoutNewBranchNonInteractive(t *testing.T) {
+	t.Parallel()
 	repo := setupRepoWithManagedWorktree(t)
 	home := t.TempDir()
 	writeConfig(t, home, "true")
@@ -280,6 +283,7 @@ func TestCheckoutNewBranchNonInteractive(t *testing.T) {
 }
 
 func TestCheckoutLocksWorktreeDuringActiveRun(t *testing.T) {
+	t.Parallel()
 	repoRoot := setupSingleWorktreeRepo(t)
 	home := t.TempDir()
 	writeConfig(t, home, "sleep 3")
@@ -332,6 +336,7 @@ func TestCheckoutLocksWorktreeDuringActiveRun(t *testing.T) {
 }
 
 func TestCheckoutValidationErrorNonInteractive(t *testing.T) {
+	t.Parallel()
 	repo := setupRepoWithManagedWorktree(t)
 	home := t.TempDir()
 	writeConfig(t, home, "true")
@@ -345,6 +350,7 @@ func TestCheckoutValidationErrorNonInteractive(t *testing.T) {
 }
 
 func TestTmuxStatusWithFakeGH(t *testing.T) {
+	t.Parallel()
 	repo := setupRepoWithManagedWorktree(t)
 	home := t.TempDir()
 	fakeBin := toolPathDir(t, true)
@@ -380,6 +386,7 @@ exit 1
 }
 
 func TestTmuxStatusWithoutGHFallsBack(t *testing.T) {
+	t.Parallel()
 	repo := setupRepoWithManagedWorktree(t)
 	home := t.TempDir()
 	fakeBin := toolPathDir(t, true)
@@ -394,6 +401,7 @@ func TestTmuxStatusWithoutGHFallsBack(t *testing.T) {
 }
 
 func TestDisableTmuxSkipsTmuxBinaryUsage(t *testing.T) {
+	t.Parallel()
 	repo := setupRepoWithManagedWorktree(t)
 	home := t.TempDir()
 	writeConfig(t, home, "true")
@@ -420,6 +428,7 @@ exit 0
 }
 
 func TestDisableITermSuppressesITermEscapes(t *testing.T) {
+	t.Parallel()
 	repo := setupRepoWithManagedWorktree(t)
 	home := t.TempDir()
 	writeConfig(t, home, "true")
@@ -437,6 +446,7 @@ func TestDisableITermSuppressesITermEscapes(t *testing.T) {
 }
 
 func TestTestModeBypassesInteractiveUI(t *testing.T) {
+	t.Parallel()
 	if runtime.GOOS == "windows" {
 		t.Skip("interactive bypass e2e is unix-oriented")
 	}
@@ -452,6 +462,7 @@ func TestTestModeBypassesInteractiveUI(t *testing.T) {
 }
 
 func TestE2ECheckoutNewBranchWithFetchOnIsolatedRepo(t *testing.T) {
+	t.Parallel()
 	root := t.TempDir()
 	originBare := filepath.Join(root, "origin.git")
 	seed := filepath.Join(root, "seed")
@@ -499,6 +510,7 @@ func TestE2ECheckoutNewBranchWithFetchOnIsolatedRepo(t *testing.T) {
 }
 
 func TestE2ECreateBranchFailsOnUnbornHeadWithActionableError(t *testing.T) {
+	t.Parallel()
 	repo := filepath.Join(t.TempDir(), "unborn")
 	runCmd(t, "", nil, "git", "init", repo)
 	runCmd(t, repo, nil, "git", "config", "user.email", "e2e@example.test")
@@ -517,6 +529,7 @@ func TestE2ECreateBranchFailsOnUnbornHeadWithActionableError(t *testing.T) {
 }
 
 func TestE2ECreateBranchWithoutOriginCanUseLocalBaseRef(t *testing.T) {
+	t.Parallel()
 	repo := filepath.Join(t.TempDir(), "no-origin")
 	runCmd(t, "", nil, "git", "init", repo)
 	runCmd(t, repo, nil, "git", "checkout", "-B", "main")
@@ -546,6 +559,7 @@ func TestE2ECreateBranchWithoutOriginCanUseLocalBaseRef(t *testing.T) {
 }
 
 func TestE2ECheckoutFailsInNonGitDirectory(t *testing.T) {
+	t.Parallel()
 	workDir := t.TempDir()
 	home := t.TempDir()
 	writeConfig(t, home, "true")
@@ -559,6 +573,7 @@ func TestE2ECheckoutFailsInNonGitDirectory(t *testing.T) {
 }
 
 func TestE2ECreateBranchFromDetachedHeadWithExplicitBase(t *testing.T) {
+	t.Parallel()
 	repo := filepath.Join(t.TempDir(), "detached")
 	runCmd(t, "", nil, "git", "init", repo)
 	runCmd(t, repo, nil, "git", "checkout", "-B", "main")
@@ -583,6 +598,7 @@ func TestE2ECreateBranchFromDetachedHeadWithExplicitBase(t *testing.T) {
 }
 
 func TestE2ECreateBranchSkipsDirtyWorktreeSlot(t *testing.T) {
+	t.Parallel()
 	repo := filepath.Join(t.TempDir(), "dirty")
 	runCmd(t, "", nil, "git", "init", repo)
 	runCmd(t, repo, nil, "git", "checkout", "-B", "main")
@@ -624,6 +640,7 @@ func TestE2ECreateBranchSkipsDirtyWorktreeSlot(t *testing.T) {
 }
 
 func TestE2ECreateBranchFailsInInitializedEmptyRepo(t *testing.T) {
+	t.Parallel()
 	repo := filepath.Join(t.TempDir(), "initialized-empty")
 	runCmd(t, "", nil, "git", "init", repo)
 	runCmd(t, repo, nil, "git", "config", "user.email", "e2e@example.test")
