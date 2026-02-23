@@ -413,17 +413,12 @@ func launchRenameBranchPopup(basePath string) error {
 		}
 		bin = discovered
 	}
-	cmd := exec.Command(
-		"tmux",
-		"display-popup",
-		"-E",
-		"-w", "60",
-		"-h", "10",
-		bin,
-		"tmux-actions",
-		basePath,
-		string(tmuxActionRename),
+	renameCmd := fmt.Sprintf("%s tmux-actions %s %s",
+		shellQuote(bin),
+		shellQuote(basePath),
+		shellQuote(string(tmuxActionRename)),
 	)
+	cmd := exec.Command("tmux", "display-popup", "-E", "-w", "60", "-h", "10", renameCmd)
 	return cmd.Start()
 }
 
