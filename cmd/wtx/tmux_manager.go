@@ -17,6 +17,10 @@ import (
 const tmuxStatusIntervalSeconds = "10"
 const tmuxStatusRightHint = " ^A actions | ^W back#{?#{>:#{window_panes},1}, | ⌥⇧↑/⌥⇧↓ resize,} "
 
+var tmuxMouseEnabledTerminals = map[string]struct{}{
+	"ghostty": {},
+}
+
 func ensureFreshTmuxSession(args []string) (bool, error) {
 	if tmuxIntegrationDisabled() {
 		return false, nil
@@ -320,9 +324,13 @@ func applyWTXSessionDefaults(sessionID string, enableDestroyUnattached bool) {
 	if enableDestroyUnattached {
 		tmuxSetOption(sessionID, "destroy-unattached", "on")
 	}
-	// Enable mouse so touchpad wheel events scroll pane output instead of shell history
-	// in terminals like Ghostty when running full-screen TUIs inside tmux.
-	tmuxSetOption(sessionID, "mouse", "on")
+	// Keep mouse mode off by default, but enable it for terminals that need tmux to
+	// capture wheel events for proper viewport scrolling (for example Ghostty).
+	mouseValue := "off"
+	if tmuxMouseEnabledForCurrentTerminal() {
+		mouseValue = "on"
+	}
+	tmuxSetOption(sessionID, "mouse", mouseValue)
 	// Keep pane separators aligned with WTX brand colors instead of tmux defaults.
 	tmuxSetOption(sessionID, "pane-border-style", "fg=#3d2a5c")
 	tmuxSetOption(sessionID, "pane-active-border-style", "fg=#6a4b9c")
@@ -379,6 +387,21 @@ func configureTmuxActionBindings(sessionID string, wtxBin string) {
 	_ = exec.Command("tmux", "bind-key", "-n", "C-l", "popup", "-E", "-w", "60", "-h", "20", ideCmd).Run()
 	backCmd := tmuxActionsCommandWithAction(wtxBin, tmuxActionBack)
 	_ = exec.Command("tmux", "bind-key", "-n", "C-w", "run-shell", backCmd).Run()
+}
+
+func tmuxMouseEnabledForCurrentTerminal() bool {
+	termProgram := strings.ToLower(strings.TrimSpace(os.Getenv("TERM_PROGRAM")))
+	if termProgram != "" {
+		_, enabled := tmuxMouseEnabledTerminals[termProgram]
+		return enabled
+	}
+	term := strings.ToLower(strings.TrimSpace(os.Getenv("TERM")))
+	for terminal := range tmuxMouseEnabledTerminals {
+		if strings.Contains(term, terminal) {
+			return true
+		}
+	}
+	return false
 }
 
 func configureTmuxStatus(sessionID string, leftLength string, interval string) {
