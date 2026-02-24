@@ -122,12 +122,12 @@ func (m tmuxActionsModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.rebuildFiltered()
 			}
 			return m, nil
-		case "up", "k":
+		case "up":
 			if len(m.filtered) > 0 && m.index > 0 {
 				m.index--
 			}
 			return m, nil
-		case "down", "j":
+		case "down":
 			if len(m.filtered) > 0 && m.index < len(m.filtered)-1 {
 				m.index++
 			}
