@@ -75,9 +75,6 @@ func loadOpenScreenCmd(orchestrator *WorktreeOrchestrator, mgr *WorktreeManager)
 				Locked:    !wt.Available,
 				PRLoading: true,
 			}
-			if locked, err := worktreeLockedByAny(orchestrator, status.RepoRoot, wt.Path); err == nil && locked {
-				slots[i].Locked = true
-			}
 			if slots[i].Locked {
 				lockedBranches[strings.TrimSpace(slots[i].Branch)] = true
 			}
