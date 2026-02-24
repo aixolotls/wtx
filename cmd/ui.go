@@ -11,7 +11,7 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/huh"
 	"github.com/charmbracelet/lipgloss"
-	uiview "github.com/mrbonezy/wtx/ui"
+	uiview "github.com/aixolotls/wtx/ui"
 	"github.com/muesli/termenv"
 )
 
