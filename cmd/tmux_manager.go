@@ -21,10 +21,11 @@ func ensureFreshTmuxSession(args []string) (bool, error) {
 	if tmuxIntegrationDisabled() {
 		return false, nil
 	}
-	if strings.TrimSpace(os.Getenv("TMUX")) != "" {
+	if _, err := exec.LookPath("tmux"); err != nil {
 		return false, nil
 	}
-	if _, err := exec.LookPath("tmux"); err != nil {
+	inTmux := strings.TrimSpace(os.Getenv("TMUX")) != ""
+	if inTmux && !shouldStartIsolatedTmuxSession(resolveCurrentTerminalProgram(), resolveCurrentSessionParentTerminalProgram()) {
 		return false, nil
 	}
 
@@ -41,7 +42,7 @@ func ensureFreshTmuxSession(args []string) (bool, error) {
 	setITermWTXTab()
 
 	session := fmt.Sprintf("wtx-%d", time.Now().UnixNano())
-	parentTerminal := resolveParentTerminalProgram()
+	parentTerminal := resolveCurrentTerminalProgram()
 	tmuxArgs := []string{
 		"new-session", "-d",
 		"-e", "WTX_STATUS_BIN=" + bin,
@@ -59,6 +60,16 @@ func ensureFreshTmuxSession(args []string) (bool, error) {
 	}
 
 	applyStartupThemeToSession(session, cwd, parentTerminal)
+	if inTmux {
+		if err := launchCommandInSession(session, bin, args[1:]); err != nil {
+			return false, err
+		}
+		if err := exec.Command("tmux", "switch-client", "-t", session).Run(); err != nil {
+			return false, err
+		}
+		return true, nil
+	}
+
 	launchErrCh := make(chan error, 1)
 	go func() {
 		// Attach first, then launch the command in the session pane to avoid
@@ -512,12 +523,8 @@ func supportsTmuxAgentLifecycle(bin string) bool {
 	return cmd.Run() == nil
 }
 
-func resolveParentTerminalProgram() string {
-	term := strings.TrimSpace(os.Getenv("WTX_PARENT_TERMINAL"))
-	if term != "" {
-		return term
-	}
-	term = strings.TrimSpace(os.Getenv("TERM_PROGRAM"))
+func resolveCurrentTerminalProgram() string {
+	term := strings.TrimSpace(os.Getenv("TERM_PROGRAM"))
 	if term != "" {
 		return term
 	}
@@ -526,6 +533,38 @@ func resolveParentTerminalProgram() string {
 		return term
 	}
 	return "terminal"
+}
+
+func resolveCurrentSessionParentTerminalProgram() string {
+	sessionID, err := currentSessionID()
+	if err != nil || strings.TrimSpace(sessionID) == "" {
+		return ""
+	}
+	if out, err := exec.Command("tmux", "show-options", "-qv", "-t", sessionID, "@wtx_parent_terminal").Output(); err == nil {
+		if term := strings.TrimSpace(string(out)); term != "" {
+			return term
+		}
+	}
+	if out, err := exec.Command("tmux", "show-environment", "-t", sessionID, "WTX_PARENT_TERMINAL").Output(); err == nil {
+		line := strings.TrimSpace(string(out))
+		if strings.HasPrefix(line, "WTX_PARENT_TERMINAL=") {
+			return strings.TrimSpace(strings.TrimPrefix(line, "WTX_PARENT_TERMINAL="))
+		}
+	}
+	return ""
+}
+
+func shouldStartIsolatedTmuxSession(currentTerminal string, sessionParentTerminal string) bool {
+	current := normalizeTerminalProgram(currentTerminal)
+	sessionParent := normalizeTerminalProgram(sessionParentTerminal)
+	if current == "" || sessionParent == "" {
+		return false
+	}
+	return current != sessionParent
+}
+
+func normalizeTerminalProgram(value string) string {
+	return strings.ToLower(strings.TrimSpace(value))
 }
 
 type tmuxAgentState struct {
