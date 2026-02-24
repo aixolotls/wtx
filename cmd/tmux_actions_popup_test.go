@@ -182,6 +182,22 @@ func TestTmuxActionsModel_LockedSlashAndBackspace(t *testing.T) {
 	}
 }
 
+func TestTmuxActionsModel_AllowsTypingKAndJIntoQuery(t *testing.T) {
+	m := newTmuxActionsModel("/tmp", true, false, false)
+
+	updatedModel, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'k'}})
+	updated := updatedModel.(tmuxActionsModel)
+	if updated.query != "k" {
+		t.Fatalf("expected query to include k, got %q", updated.query)
+	}
+
+	updatedModel, _ = updated.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'j'}})
+	updated = updatedModel.(tmuxActionsModel)
+	if updated.query != "kj" {
+		t.Fatalf("expected query to include j, got %q", updated.query)
+	}
+}
+
 func TestTmuxActionsModel_EnterExecutesExactAlias(t *testing.T) {
 	m := newTmuxActionsModel("/tmp", true, false, false)
 	m.query = "rename"
