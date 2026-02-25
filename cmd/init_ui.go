@@ -40,11 +40,7 @@ func newConfigModel() configModel {
 
 	agentInput := textinput.New()
 	agentInput.Placeholder = defaultAgentCommand
-	agentValue := defaultAgentCommand
-	if strings.TrimSpace(cfg.AgentCommand) != "" {
-		agentValue = cfg.AgentCommand
-	}
-	agentInput.SetValue(agentValue)
+	agentInput.SetValue(strings.TrimSpace(cfg.AgentCommand))
 	agentInput.CharLimit = 200
 	agentInput.Width = 40
 	agentInput.Focus()
@@ -71,11 +67,7 @@ func newConfigModel() configModel {
 
 	ideInput := textinput.New()
 	ideInput.Placeholder = defaultIDECommand
-	ideValue := defaultIDECommand
-	if strings.TrimSpace(cfg.IDECommand) != "" {
-		ideValue = cfg.IDECommand
-	}
-	ideInput.SetValue(ideValue)
+	ideInput.SetValue(strings.TrimSpace(cfg.IDECommand))
 	ideInput.CharLimit = 200
 	ideInput.Width = 40
 	inputs[fieldIDECommand] = ideInput
@@ -154,9 +146,6 @@ func (m configModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 func (m configModel) save() error {
 	agent := strings.TrimSpace(m.inputs[fieldAgent].Value())
-	if agent == "" {
-		agent = defaultAgentCommand
-	}
 
 	branch := strings.TrimSpace(m.inputs[fieldDefaultBranch].Value())
 	branchLimit, err := normalizeMainScreenBranchLimit(m.inputs[fieldMainScreenBranchCount].Value())
@@ -165,9 +154,6 @@ func (m configModel) save() error {
 	}
 
 	ide := strings.TrimSpace(m.inputs[fieldIDECommand].Value())
-	if ide == "" {
-		ide = defaultIDECommand
-	}
 
 	cfg := Config{
 		AgentCommand:          agent,

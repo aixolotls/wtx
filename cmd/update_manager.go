@@ -16,8 +16,8 @@ import (
 )
 
 const (
-	updateRepoModule       = "github.com/mrbonezy/wtx"
-	updateRepoGitURL       = "https://github.com/mrbonezy/wtx.git"
+	updateRepoModule       = "github.com/aixolotls/wtx"
+	updateRepoGitURL       = "https://github.com/aixolotls/wtx.git"
 	defaultUpdateInterval  = 10 * time.Minute
 	startupUpdateTimeout   = 3 * time.Second
 	resolveUpdateTimeout   = 8 * time.Second

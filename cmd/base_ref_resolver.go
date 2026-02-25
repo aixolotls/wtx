@@ -2,7 +2,10 @@ package cmd
 
 import "strings"
 
-func resolveNewBranchBaseRef(configBaseRef string, statusBaseRef string) string {
+func resolveNewBranchBaseRef(configBaseRef string, statusBaseRef string, hasRemote bool) string {
+	if !hasRemote {
+		return "main"
+	}
 	base := strings.TrimSpace(configBaseRef)
 	if base != "" {
 		return base

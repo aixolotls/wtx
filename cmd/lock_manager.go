@@ -8,8 +8,10 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"os/exec"
 	"os/user"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"syscall"
@@ -92,13 +94,17 @@ func (m *LockManager) acquireWithPID(repoRoot string, worktreePath string, pid i
 		return nil, statErr
 	}
 	current, readErr := readLockPayload(lockPath)
-	if readErr == nil && current.PID > 0 && pidAlive(current.PID) {
+	ownerActive := false
+	if readErr == nil {
+		ownerActive = lockOwnerStillActive(current.OwnerID, current.PID)
+	}
+	if readErr == nil && ownerActive {
 		if current.OwnerID != ownerID {
 			return nil, errors.New("worktree locked")
 		}
 	}
 	if time.Since(info.ModTime()) < m.staleAfter {
-		if readErr != nil || current.OwnerID != ownerID {
+		if readErr != nil || (ownerActive && current.OwnerID != ownerID) {
 			return nil, errors.New("worktree locked")
 		}
 	}
@@ -146,10 +152,10 @@ func (m *LockManager) IsAvailable(repoRoot string, worktreePath string) (bool, e
 		if payload.OwnerID == buildOwnerID() {
 			return true, nil
 		}
-		if payload.PID > 0 && pidAlive(payload.PID) {
+		if lockOwnerStillActive(payload.OwnerID, payload.PID) {
 			return false, nil
 		}
-		if time.Since(info.ModTime()) < m.staleAfter {
+		if time.Since(info.ModTime()) < m.staleAfter && payload.OwnerID != buildOwnerID() {
 			return false, nil
 		}
 		return true, nil
@@ -430,6 +436,108 @@ func pidAlive(pid int) bool {
 		return true
 	}
 	return false
+}
+
+func lockOwnerStillActive(ownerID string, pid int) bool {
+	ownerID = strings.TrimSpace(ownerID)
+	if ownerID == "" {
+		return pidAlive(pid)
+	}
+	if strings.HasPrefix(ownerID, "tmux:") {
+		return tmuxOwnerStillActive(ownerID, pid)
+	}
+	return pidAlive(pid)
+}
+
+func tmuxOwnerStillActive(ownerID string, pid int) bool {
+	sessionID, windowID, ok := parseTmuxOwnerID(ownerID)
+	if !ok {
+		return pidAlive(pid)
+	}
+	if _, err := exec.LookPath("tmux"); err != nil {
+		return pidAlive(pid)
+	}
+	if !tmuxSessionExists(sessionID) {
+		return false
+	}
+	if windowID != "" && !tmuxWindowExists(sessionID, windowID) {
+		return false
+	}
+	if attached, ok := tmuxSessionAttachedCount(sessionID); ok && attached == 0 {
+		return false
+	}
+	if pid > 0 {
+		return pidAlive(pid)
+	}
+	return true
+}
+
+func parseTmuxOwnerID(ownerID string) (string, string, bool) {
+	ownerID = strings.TrimSpace(ownerID)
+	if !strings.HasPrefix(ownerID, "tmux:") {
+		return "", "", false
+	}
+	rest := strings.TrimSpace(strings.TrimPrefix(ownerID, "tmux:"))
+	if rest == "" {
+		return "", "", false
+	}
+	parts := strings.Split(rest, ":")
+	sessionID := strings.TrimSpace(parts[0])
+	if sessionID == "" {
+		return "", "", false
+	}
+	windowID := ""
+	if len(parts) > 1 {
+		windowID = strings.TrimSpace(parts[1])
+	}
+	return sessionID, windowID, true
+}
+
+func tmuxSessionExists(sessionID string) bool {
+	sessionID = strings.TrimSpace(sessionID)
+	if sessionID == "" {
+		return false
+	}
+	cmd := exec.Command("tmux", "has-session", "-t", sessionID)
+	return cmd.Run() == nil
+}
+
+func tmuxWindowExists(sessionID string, windowID string) bool {
+	sessionID = strings.TrimSpace(sessionID)
+	windowID = strings.TrimSpace(windowID)
+	if sessionID == "" || windowID == "" {
+		return false
+	}
+	out, err := exec.Command("tmux", "list-windows", "-t", sessionID, "-F", "#{window_id}").Output()
+	if err != nil {
+		return false
+	}
+	for _, line := range strings.Split(string(out), "\n") {
+		if strings.TrimSpace(line) == windowID {
+			return true
+		}
+	}
+	return false
+}
+
+func tmuxSessionAttachedCount(sessionID string) (int, bool) {
+	sessionID = strings.TrimSpace(sessionID)
+	if sessionID == "" {
+		return 0, false
+	}
+	out, err := exec.Command("tmux", "display-message", "-p", "-t", sessionID, "#{session_attached}").Output()
+	if err != nil {
+		return 0, false
+	}
+	value := strings.TrimSpace(string(out))
+	if value == "" {
+		return 0, false
+	}
+	count, err := strconv.Atoi(value)
+	if err != nil {
+		return 0, false
+	}
+	return count, true
 }
 
 func randomToken() string {

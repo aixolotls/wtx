@@ -1,4 +1,5 @@
-# wtx: monorepo-first worktrees for AI agents
+# wtx
+wtx is a monorepo-first worktrees CLI for AI agents.
 `wtx` starts each agent session in its own worktree for parallel agent workflows.
 Reuse + locking keeps parallel worktrees fast, isolated, and safe in large monorepos.
 
@@ -16,7 +17,7 @@ wtx checkout -b feat/second
 ## Installation
 
 ```sh
-go install github.com/mrbonezy/wtx@latest
+go install github.com/aixolotls/wtx@latest
 ```
 
 ## Why wtx

@@ -28,6 +28,7 @@ type WorktreeStatus struct {
 	InRepo       bool
 	RepoRoot     string
 	CWD          string
+	HasRemote    bool
 	BaseRef      string
 	Worktrees    []WorktreeInfo
 	Orphaned     []WorktreeInfo

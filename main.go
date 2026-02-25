@@ -4,7 +4,7 @@ import (
 	"fmt"
 	"os"
 
-	wtxcmd "github.com/mrbonezy/wtx/cmd"
+	wtxcmd "github.com/aixolotls/wtx/cmd"
 )
 
 func main() {

@@ -166,3 +166,63 @@ func TestPromptAndMaybeInstallVersionUpdate_YesInstalls(t *testing.T) {
 		t.Fatalf("expected updated message, got %q", out.String())
 	}
 }
+
+func TestEnsureConfigReady_ConfigExistsSkipsInit(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+
+	fetch := true
+	if err := SaveConfig(Config{
+		AgentCommand:          "",
+		NewBranchFetchFirst:   &fetch,
+		IDECommand:            "",
+		MainScreenBranchLimit: defaultMainScreenBranchLimit,
+	}); err != nil {
+		t.Fatalf("save config: %v", err)
+	}
+
+	called := false
+	oldInit := initializeConfigFn
+	initializeConfigFn = func() error {
+		called = true
+		return nil
+	}
+	t.Cleanup(func() {
+		initializeConfigFn = oldInit
+	})
+
+	if err := ensureConfigReady(); err != nil {
+		t.Fatalf("ensureConfigReady: %v", err)
+	}
+	if called {
+		t.Fatalf("expected config init to be skipped")
+	}
+}
+
+func TestEnsureConfigReady_InitializesWhenMissing(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+
+	called := false
+	oldInit := initializeConfigFn
+	initializeConfigFn = func() error {
+		called = true
+		fetch := true
+		return SaveConfig(Config{
+			AgentCommand:          "",
+			NewBranchFetchFirst:   &fetch,
+			IDECommand:            "",
+			MainScreenBranchLimit: defaultMainScreenBranchLimit,
+		})
+	}
+	t.Cleanup(func() {
+		initializeConfigFn = oldInit
+	})
+
+	if err := ensureConfigReady(); err != nil {
+		t.Fatalf("ensureConfigReady: %v", err)
+	}
+	if !called {
+		t.Fatalf("expected config init to run")
+	}
+}

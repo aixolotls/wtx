@@ -11,28 +11,38 @@ func TestParseBoolArg(t *testing.T) {
 	}
 }
 
-func TestTmuxMouseEnabledForCurrentTerminal(t *testing.T) {
-	t.Run("enabled via TERM_PROGRAM map", func(t *testing.T) {
-		t.Setenv("TERM_PROGRAM", "ghostty")
-		t.Setenv("TERM", "xterm-256color")
-		if !tmuxMouseEnabledForCurrentTerminal() {
-			t.Fatalf("expected ghostty TERM_PROGRAM to enable tmux mouse mode")
-		}
-	})
+func TestShouldStartIsolatedTmuxSession(t *testing.T) {
+	tests := []struct {
+		name          string
+		current       string
+		sessionParent string
+		want          bool
+	}{
+		{
+			name:          "same terminal does not isolate",
+			current:       "Ghostty",
+			sessionParent: "ghostty",
+			want:          false,
+		},
+		{
+			name:          "different terminal isolates",
+			current:       "Apple_Terminal",
+			sessionParent: "Ghostty",
+			want:          true,
+		},
+		{
+			name:          "missing session metadata does not isolate",
+			current:       "Apple_Terminal",
+			sessionParent: "",
+			want:          false,
+		},
+	}
 
-	t.Run("enabled via TERM fallback", func(t *testing.T) {
-		t.Setenv("TERM_PROGRAM", "")
-		t.Setenv("TERM", "xterm-ghostty")
-		if !tmuxMouseEnabledForCurrentTerminal() {
-			t.Fatalf("expected TERM fallback to enable tmux mouse mode for ghostty")
-		}
-	})
-
-	t.Run("disabled by default for other terminals", func(t *testing.T) {
-		t.Setenv("TERM_PROGRAM", "iTerm.app")
-		t.Setenv("TERM", "xterm-256color")
-		if tmuxMouseEnabledForCurrentTerminal() {
-			t.Fatalf("expected non-mapped terminals to keep tmux mouse mode disabled")
-		}
-	})
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := shouldStartIsolatedTmuxSession(tt.current, tt.sessionParent); got != tt.want {
+				t.Fatalf("shouldStartIsolatedTmuxSession(%q, %q)=%v, want %v", tt.current, tt.sessionParent, got, tt.want)
+			}
+		})
+	}
 }

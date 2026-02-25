@@ -17,18 +17,15 @@ import (
 const tmuxStatusIntervalSeconds = "10"
 const tmuxStatusRightHint = " ^A actions | ^W back#{?#{>:#{window_panes},1}, | ⌥⇧↑/⌥⇧↓ resize,} "
 
-var tmuxMouseEnabledTerminals = map[string]struct{}{
-	"ghostty": {},
-}
-
 func ensureFreshTmuxSession(args []string) (bool, error) {
 	if tmuxIntegrationDisabled() {
 		return false, nil
 	}
-	if strings.TrimSpace(os.Getenv("TMUX")) != "" {
+	if _, err := exec.LookPath("tmux"); err != nil {
 		return false, nil
 	}
-	if _, err := exec.LookPath("tmux"); err != nil {
+	inTmux := strings.TrimSpace(os.Getenv("TMUX")) != ""
+	if inTmux && !shouldStartIsolatedTmuxSession(resolveCurrentTerminalProgram(), resolveCurrentSessionParentTerminalProgram()) {
 		return false, nil
 	}
 
@@ -45,12 +42,15 @@ func ensureFreshTmuxSession(args []string) (bool, error) {
 	setITermWTXTab()
 
 	session := fmt.Sprintf("wtx-%d", time.Now().UnixNano())
-	parentTerminal := resolveParentTerminalProgram()
+	parentTerminal := resolveCurrentTerminalProgram()
 	tmuxArgs := []string{
 		"new-session", "-d",
 		"-e", "WTX_STATUS_BIN=" + bin,
 		"-e", "WTX_PARENT_TERMINAL=" + parentTerminal,
 		"-s", session, "-c", cwd,
+	}
+	if configDir := strings.TrimSpace(os.Getenv(configDirOverrideEnv)); configDir != "" {
+		tmuxArgs = append(tmuxArgs, "-e", configDirOverrideEnv+"="+configDir)
 	}
 	cmd := exec.Command("tmux", tmuxArgs...)
 	out, err := cmd.CombinedOutput()
@@ -63,6 +63,16 @@ func ensureFreshTmuxSession(args []string) (bool, error) {
 	}
 
 	applyStartupThemeToSession(session, cwd, parentTerminal)
+	if inTmux {
+		if err := launchCommandInSession(session, bin, args[1:]); err != nil {
+			return false, err
+		}
+		if err := exec.Command("tmux", "switch-client", "-t", session).Run(); err != nil {
+			return false, err
+		}
+		return true, nil
+	}
+
 	launchErrCh := make(chan error, 1)
 	go func() {
 		// Attach first, then launch the command in the session pane to avoid
@@ -93,9 +103,14 @@ func applyStartupThemeToSession(sessionID string, cwd string, parentTerminal str
 	if sessionID == "" {
 		return
 	}
+	cwd = strings.TrimSpace(cwd)
 	banner := stripANSI(renderBanner("", cwd, ""))
 	// Session is detached at startup; avoid destroy-unattached here.
 	applyWTXSessionDefaults(sessionID, false)
+	if cwd != "" {
+		_ = exec.Command("tmux", "set-environment", "-t", sessionID, "WTX_WORKTREE_PATH", cwd).Run()
+		tmuxSetOption(sessionID, "@wtx_worktree_path", cwd)
+	}
 	parentTerminal = strings.TrimSpace(parentTerminal)
 	if parentTerminal != "" {
 		_ = exec.Command("tmux", "set-environment", "-t", sessionID, "WTX_PARENT_TERMINAL", parentTerminal).Run()
@@ -335,13 +350,8 @@ func applyWTXSessionDefaults(sessionID string, enableDestroyUnattached bool) {
 	if enableDestroyUnattached {
 		tmuxSetOption(sessionID, "destroy-unattached", "on")
 	}
-	// Keep mouse mode off by default, but enable it for terminals that need tmux to
-	// capture wheel events for proper viewport scrolling (for example Ghostty).
-	mouseValue := "off"
-	if tmuxMouseEnabledForCurrentTerminal() {
-		mouseValue = "on"
-	}
-	tmuxSetOption(sessionID, "mouse", mouseValue)
+	// Keep wheel scrolling and mouse interactions working across modern terminals.
+	tmuxSetOption(sessionID, "mouse", "on")
 	// Keep pane separators aligned with WTX brand colors instead of tmux defaults.
 	tmuxSetOption(sessionID, "pane-border-style", "fg=#3d2a5c")
 	tmuxSetOption(sessionID, "pane-active-border-style", "fg=#6a4b9c")
@@ -376,7 +386,7 @@ func applyWTXSessionDefaults(sessionID string, enableDestroyUnattached bool) {
 	_ = exec.Command("tmux", "unbind-key", "-n", "C-a").Run()
 	_ = exec.Command("tmux", "unbind-key", "-n", "C-p").Run()
 	_ = exec.Command("tmux", "unbind-key", "-n", "C-l").Run()
-	_ = exec.Command("tmux", "unbind-key", "-n", "C-w").Run()
+	_ = exec.Command("tmux", "unbind-key", "-n", "C-b").Run()
 	_ = exec.Command("tmux", "unbind-key", "-n", "M-a").Run()
 	_ = exec.Command("tmux", "unbind-key", "-n", "M-A").Run()
 	configureTmuxActionBindings(sessionID, resolveAgentLifecycleBinary())
@@ -392,27 +402,12 @@ func configureTmuxActionBindings(sessionID string, wtxBin string) {
 	prCmd := tmuxActionsCommandWithAction(wtxBin, tmuxActionPR)
 	ideCmd := tmuxActionsCommandWithAction(wtxBin, tmuxActionIDE)
 
-	_ = exec.Command("tmux", "bind-key", "-n", "C-a", "popup", "-E", "-w", "60", "-h", "20", actionsPopupCmd).Run()
+	_ = exec.Command("tmux", "bind-key", "-n", "C-a", "popup", "-E", "-w", "72", "-h", "20", actionsPopupCmd).Run()
 	_ = exec.Command("tmux", "bind-key", "-n", "C-s", "run-shell", splitCmd).Run()
 	_ = exec.Command("tmux", "bind-key", "-n", "C-p", "run-shell", prCmd).Run()
 	_ = exec.Command("tmux", "bind-key", "-n", "C-l", "popup", "-E", "-w", "60", "-h", "20", ideCmd).Run()
 	backCmd := tmuxActionsCommandWithAction(wtxBin, tmuxActionBack)
-	_ = exec.Command("tmux", "bind-key", "-n", "C-w", "run-shell", backCmd).Run()
-}
-
-func tmuxMouseEnabledForCurrentTerminal() bool {
-	termProgram := strings.ToLower(strings.TrimSpace(os.Getenv("TERM_PROGRAM")))
-	if termProgram != "" {
-		_, enabled := tmuxMouseEnabledTerminals[termProgram]
-		return enabled
-	}
-	term := strings.ToLower(strings.TrimSpace(os.Getenv("TERM")))
-	for terminal := range tmuxMouseEnabledTerminals {
-		if strings.Contains(term, terminal) {
-			return true
-		}
-	}
-	return false
+	_ = exec.Command("tmux", "bind-key", "-n", "C-b", "run-shell", backCmd).Run()
 }
 
 func configureTmuxStatus(sessionID string, leftLength string, interval string) {
@@ -534,12 +529,8 @@ func supportsTmuxAgentLifecycle(bin string) bool {
 	return cmd.Run() == nil
 }
 
-func resolveParentTerminalProgram() string {
-	term := strings.TrimSpace(os.Getenv("WTX_PARENT_TERMINAL"))
-	if term != "" {
-		return term
-	}
-	term = strings.TrimSpace(os.Getenv("TERM_PROGRAM"))
+func resolveCurrentTerminalProgram() string {
+	term := strings.TrimSpace(os.Getenv("TERM_PROGRAM"))
 	if term != "" {
 		return term
 	}
@@ -548,6 +539,38 @@ func resolveParentTerminalProgram() string {
 		return term
 	}
 	return "terminal"
+}
+
+func resolveCurrentSessionParentTerminalProgram() string {
+	sessionID, err := currentSessionID()
+	if err != nil || strings.TrimSpace(sessionID) == "" {
+		return ""
+	}
+	if out, err := exec.Command("tmux", "show-options", "-qv", "-t", sessionID, "@wtx_parent_terminal").Output(); err == nil {
+		if term := strings.TrimSpace(string(out)); term != "" {
+			return term
+		}
+	}
+	if out, err := exec.Command("tmux", "show-environment", "-t", sessionID, "WTX_PARENT_TERMINAL").Output(); err == nil {
+		line := strings.TrimSpace(string(out))
+		if strings.HasPrefix(line, "WTX_PARENT_TERMINAL=") {
+			return strings.TrimSpace(strings.TrimPrefix(line, "WTX_PARENT_TERMINAL="))
+		}
+	}
+	return ""
+}
+
+func shouldStartIsolatedTmuxSession(currentTerminal string, sessionParentTerminal string) bool {
+	current := normalizeTerminalProgram(currentTerminal)
+	sessionParent := normalizeTerminalProgram(sessionParentTerminal)
+	if current == "" || sessionParent == "" {
+		return false
+	}
+	return current != sessionParent
+}
+
+func normalizeTerminalProgram(value string) string {
+	return strings.ToLower(strings.TrimSpace(value))
 }
 
 type tmuxAgentState struct {
