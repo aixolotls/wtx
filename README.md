@@ -17,6 +17,16 @@ wtx checkout -b feat/second
 ## Installation
 
 ```sh
+curl -fsSL https://raw.githubusercontent.com/aixolotls/wtx/main/install.sh | bash
+```
+
+Installer env vars:
+- `WTX_VERSION`: install a specific release tag (for example `v1.2.3`).
+- `WTX_INSTALL_DIR`: install destination (default `~/.local/bin`).
+
+Alternative (requires Go):
+
+```sh
 go install github.com/aixolotls/wtx@latest
 ```
 
