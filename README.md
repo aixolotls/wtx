@@ -7,7 +7,7 @@ wtx manages a pool of reusable worktrees and automatically assigns one to the br
 
 Works in any terminal (ghostty, iTerm, etc.) and with any AI agent (Claude, Codex, ...).
 
-![wtx screenshot](docs/assets/wtx-screenshot.png)
+![wtx screenshot](docs/assets/wtx-screenshot-v2.png)
 
 ## Quickstart
 

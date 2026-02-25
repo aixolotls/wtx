@@ -39,7 +39,6 @@ type tmuxActionItem struct {
 	Description string
 	Keybinding  string
 	Action      tmuxAction
-	Keywords    string
 	Disabled    bool
 }
 
@@ -58,17 +57,15 @@ type tmuxActionsModel struct {
 
 func newTmuxActionsModel(basePath string, prAvailable bool, canOpenITermTab bool, canOpenShellWindow bool) tmuxActionsModel {
 	terminalName := terminalProgramLabel()
-	terminalKeyword := strings.ToLower(strings.TrimSpace(terminalName))
 	windowTerminalName := terminalWindowProgramLabel()
-	windowTerminalKeyword := strings.ToLower(strings.TrimSpace(windowTerminalName))
 	items := []tmuxActionItem{
-		{Alias: "back", Label: "Back to WTX", Description: "Back to WTX (stop agent)", Keybinding: "ctrl+b", Action: tmuxActionBack, Keywords: "return wtx unlock"},
-		{Alias: "ide", Label: "Open IDE", Description: "Open IDE", Keybinding: "ctrl+l", Action: tmuxActionIDE, Keywords: "editor code"},
-		{Alias: "pr", Label: "Open PR", Description: "Open PR", Keybinding: "ctrl+p", Action: tmuxActionPR, Keywords: "pull request github", Disabled: !prAvailable},
-		{Alias: "rename", Label: "Rename branch", Description: "Rename branch", Keybinding: "ctrl+r", Action: tmuxActionRename, Keywords: "branch"},
-		{Alias: "shell", Label: "Open shell", Description: "Open shell (split down)", Keybinding: "ctrl+s", Action: tmuxActionShellSplit, Keywords: "split pane s"},
-		{Alias: "tab", Label: fmt.Sprintf("Open shell tab (%s)", terminalName), Description: fmt.Sprintf("Open shell (new %s tab)", terminalName), Keybinding: "ctrl+t", Action: tmuxActionShellTab, Keywords: strings.TrimSpace("shell iterm t " + terminalKeyword), Disabled: !canOpenITermTab},
-		{Alias: "window", Label: fmt.Sprintf("Open shell window (%s)", windowTerminalName), Description: fmt.Sprintf("Open shell (new %s window)", windowTerminalName), Keybinding: "ctrl+n", Action: tmuxActionShellWindow, Keywords: strings.TrimSpace("shell iterm terminal n " + terminalKeyword + " " + windowTerminalKeyword), Disabled: !canOpenShellWindow},
+		{Alias: "back", Label: "Back to WTX", Description: "Back to WTX (stop agent)", Keybinding: "ctrl+b", Action: tmuxActionBack},
+		{Alias: "ide", Label: "Open IDE", Description: "Open IDE", Keybinding: "ctrl+l", Action: tmuxActionIDE},
+		{Alias: "pr", Label: "Open PR", Description: "Open PR", Keybinding: "ctrl+p", Action: tmuxActionPR, Disabled: !prAvailable},
+		{Alias: "rename", Label: "Rename branch", Description: "Rename branch", Keybinding: "ctrl+r", Action: tmuxActionRename},
+		{Alias: "shell", Label: "Open shell", Description: "Open shell (split down)", Keybinding: "ctrl+s", Action: tmuxActionShellSplit},
+		{Alias: "tab", Label: fmt.Sprintf("Open shell tab (%s)", terminalName), Description: fmt.Sprintf("Open shell (new %s tab)", terminalName), Keybinding: "ctrl+t", Action: tmuxActionShellTab, Disabled: !canOpenITermTab},
+		{Alias: "window", Label: fmt.Sprintf("Open shell window (%s)", windowTerminalName), Description: fmt.Sprintf("Open shell (new %s window)", windowTerminalName), Keybinding: "ctrl+n", Action: tmuxActionShellWindow, Disabled: !canOpenShellWindow},
 	}
 	sortTmuxActionItems(items)
 	model := tmuxActionsModel{
@@ -257,17 +254,8 @@ func actionMatchesQuery(item tmuxActionItem, query string) bool {
 	if query == "" {
 		return true
 	}
-	corpus := strings.ToLower(strings.TrimSpace(item.Alias + " " + item.Label + " " + item.Keywords + " " + string(item.Action)))
-	if strings.Contains(corpus, query) {
-		return true
-	}
-	parts := actionTokenSplitRe.Split(corpus, -1)
-	for _, part := range parts {
-		if strings.HasPrefix(part, query) {
-			return true
-		}
-	}
-	return false
+	alias := strings.ToLower(strings.TrimSpace(item.Alias))
+	return strings.Contains(alias, query)
 }
 
 func (m tmuxActionsModel) exactAliasAction() (tmuxAction, bool) {
@@ -332,12 +320,6 @@ func runTmuxActions(args []string) error {
 	}
 
 	if forcedAction != "" {
-		if forcedAction == tmuxActionRename {
-			if strings.TrimSpace(renameTo) != "" {
-				return runTmuxAction(basePath, sourcePane, forcedAction, renameTo)
-			}
-			return runRenameBranchPopup(basePath)
-		}
 		return runTmuxAction(basePath, sourcePane, forcedAction, renameTo)
 	}
 
@@ -352,9 +334,6 @@ func runTmuxActions(args []string) error {
 	m := finalModel.(tmuxActionsModel)
 	if m.cancel || m.chosen == "" {
 		return nil
-	}
-	if m.chosen == tmuxActionRename {
-		return runRenameBranchFollowup(basePath)
 	}
 	return runTmuxAction(basePath, sourcePane, m.chosen, m.renameTo)
 }
@@ -410,32 +389,6 @@ func runTmuxAction(basePath string, sourcePane string, action tmuxAction, rename
 	default:
 		return nil
 	}
-}
-
-func runRenameBranchFollowup(basePath string) error {
-	if tmuxAvailable() {
-		return launchRenameBranchPrompt(basePath)
-	}
-	return runRenameBranchPopup(basePath)
-}
-
-func launchRenameBranchPrompt(basePath string) error {
-	bin := strings.TrimSpace(resolveAgentLifecycleBinary())
-	if bin == "" {
-		discovered, err := exec.LookPath("wtx")
-		if err != nil {
-			return err
-		}
-		bin = discovered
-	}
-	renameCmd := fmt.Sprintf("%s tmux-actions %s %s --rename-to %s",
-		shellQuote(bin),
-		shellQuote(basePath),
-		shellQuote(string(tmuxActionRename)),
-		shellQuote("%%"),
-	)
-	promptCmd := "run-shell -b " + renameCmd
-	return exec.Command("tmux", "command-prompt", "-p", "Rename branch to", promptCmd).Run()
 }
 
 func renameCurrentBranch(basePath string, renameTo string) error {
@@ -769,7 +722,6 @@ func resolveTmuxActionsBasePathFromCandidates(paths ...string) string {
 	return ""
 }
 
-var actionTokenSplitRe = regexp.MustCompile(`[^a-z0-9]+`)
 var prSummaryLabelRe = regexp.MustCompile(`\bPR\s+#\d+\b`)
 
 func sortTmuxActionItems(items []tmuxActionItem) {

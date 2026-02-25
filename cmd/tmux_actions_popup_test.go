@@ -14,40 +14,39 @@ import (
 
 func TestActionMatchesQuery_Substring(t *testing.T) {
 	item := tmuxActionItem{
-		Label:    "Open shell (split down)",
-		Action:   tmuxActionShellSplit,
-		Keywords: "shell split pane",
+		Alias:  "shell",
+		Action: tmuxActionShellSplit,
 	}
-	if !actionMatchesQuery(item, "split") {
+	if !actionMatchesQuery(item, "ell") {
 		t.Fatalf("expected substring query to match")
 	}
 }
 
-func TestActionMatchesQuery_TokenPrefix(t *testing.T) {
+func TestActionMatchesQuery_AliasPrefix(t *testing.T) {
 	item := tmuxActionItem{
-		Label:    "Open IDE",
-		Action:   tmuxActionIDE,
-		Keywords: "editor code",
+		Alias:  "rename",
+		Action: tmuxActionRename,
 	}
-	if !actionMatchesQuery(item, "edi") {
-		t.Fatalf("expected token prefix query to match")
+	if !actionMatchesQuery(item, "re") {
+		t.Fatalf("expected alias prefix query to match")
 	}
 }
 
-func TestActionMatchesQuery_DoesNotOvermatchShortQuery(t *testing.T) {
+func TestActionMatchesQuery_DoesNotMatchNonAliasText(t *testing.T) {
 	item := tmuxActionItem{
-		Label:    "Open shell (split down)",
-		Action:   tmuxActionShellSplit,
-		Keywords: "shell split pane ctrl+s s",
+		Alias:       "back",
+		Label:       "Back to WTX",
+		Description: "Back to WTX (stop agent)",
+		Action:      tmuxActionBack,
 	}
-	if actionMatchesQuery(item, "pr") {
-		t.Fatalf("expected short query pr not to match shell action")
+	if actionMatchesQuery(item, "return") {
+		t.Fatalf("expected non-alias query not to match")
 	}
 }
 
 func TestTmuxActionsModel_RebuildFiltered(t *testing.T) {
 	m := newTmuxActionsModel("/tmp", true, false, false)
-	m.query = "pull"
+	m.query = "pr"
 	m.rebuildFiltered()
 	item, ok := m.selectedItem()
 	if !ok {
