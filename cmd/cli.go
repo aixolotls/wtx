@@ -13,6 +13,8 @@ import (
 )
 
 var installVersionFn = installVersion
+var launchConfigUIFn = launchConfigUI
+var initializeConfigFn = initializeConfig
 
 func newRootCommand(args []string) *cobra.Command {
 	var showVersion bool
@@ -58,17 +60,7 @@ func newConfigCommand() *cobra.Command {
 		Short: "Open interactive configuration",
 		Args:  cobra.NoArgs,
 		RunE: func(_ *cobra.Command, _ []string) error {
-			if testModeEnabled() {
-				fetch := true
-				return SaveConfig(Config{
-					AgentCommand:          defaultAgentCommand,
-					NewBranchFetchFirst:   &fetch,
-					IDECommand:            defaultIDECommand,
-					MainScreenBranchLimit: defaultMainScreenBranchLimit,
-				})
-			}
-			p := tea.NewProgram(newConfigModel(), tea.WithMouseCellMotion())
-			return p.Start()
+			return launchConfigUIFn()
 		},
 	}
 }
@@ -211,20 +203,16 @@ func runDefault(args []string) error {
 		fmt.Println("wtx test mode: interactive UI bypassed")
 		return nil
 	}
+	if err := ensureConfigReady(); err != nil {
+		return err
+	}
+
 	handled, err := ensureFreshTmuxSession(args)
 	if err != nil {
 		return err
 	}
 	if handled {
 		return nil
-	}
-
-	exists, err := ConfigExists()
-	if err != nil {
-		return err
-	}
-	if !exists {
-		return fmt.Errorf("wtx not configured. run: wtx config")
 	}
 
 	setITermWTXTab()
@@ -265,6 +253,35 @@ func runDefault(args []string) error {
 		}
 	}
 	return nil
+}
+
+func ensureConfigReady() error {
+	exists, err := ConfigExists()
+	if err != nil {
+		return err
+	}
+	if exists {
+		return nil
+	}
+	return initializeConfigFn()
+}
+
+func launchConfigUI() error {
+	if testModeEnabled() {
+		return initializeConfig()
+	}
+	p := tea.NewProgram(newConfigModel(), tea.WithMouseCellMotion())
+	return p.Start()
+}
+
+func initializeConfig() error {
+	fetch := true
+	return SaveConfig(Config{
+		AgentCommand:          "",
+		NewBranchFetchFirst:   &fetch,
+		IDECommand:            "",
+		MainScreenBranchLimit: defaultMainScreenBranchLimit,
+	})
 }
 
 func runVersionCommand() error {

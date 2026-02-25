@@ -400,7 +400,7 @@ func renderOpenScreen(m model) string {
 	}
 	if len(m.openLockedBranches) > 0 {
 		b.WriteString("\n")
-		b.WriteString(secondaryStyle.Render(fmt.Sprintf("Locked branches (%d):", len(m.openLockedBranches))) + "\n")
+		b.WriteString(secondaryStyle.Render(fmt.Sprintf("In use (%d):", len(m.openLockedBranches))) + "\n")
 		for _, branch := range m.openLockedBranches {
 			pr := "-"
 			if branch.PRLoading && m.openLoading {

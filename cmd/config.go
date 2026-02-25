@@ -19,7 +19,8 @@ type Config struct {
 
 const defaultAgentCommand = "claude"
 const defaultIDECommand = "code"
-const defaultMainScreenBranchLimit = 10
+const defaultMainScreenBranchLimit = 5
+const configDirOverrideEnv = "WTX_CONFIG_DIR"
 
 func LoadConfig() (Config, error) {
 	path, err := configPath()
@@ -35,9 +36,7 @@ func LoadConfig() (Config, error) {
 		return Config{}, err
 	}
 	cfg.AgentCommand = strings.TrimSpace(cfg.AgentCommand)
-	if cfg.AgentCommand == "" {
-		cfg.AgentCommand = defaultAgentCommand
-	}
+	cfg.IDECommand = strings.TrimSpace(cfg.IDECommand)
 	cfg.NewBranchBaseRef = strings.TrimSpace(cfg.NewBranchBaseRef)
 	if cfg.MainScreenBranchLimit <= 0 {
 		cfg.MainScreenBranchLimit = defaultMainScreenBranchLimit
@@ -89,6 +88,9 @@ func SaveConfig(cfg Config) error {
 }
 
 func configPath() (string, error) {
+	if dir := strings.TrimSpace(os.Getenv(configDirOverrideEnv)); dir != "" {
+		return filepath.Join(dir, "config.json"), nil
+	}
 	home := os.Getenv("HOME")
 	if strings.TrimSpace(home) == "" {
 		return "", errors.New("HOME not set")

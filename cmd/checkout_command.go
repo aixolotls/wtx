@@ -108,11 +108,10 @@ func runCheckout(branch string, create bool, baseOverride string, fetchOverride 
 	}
 
 	exists, err := ConfigExists()
-	if err != nil {
-		return err
-	}
-	if !exists {
-		return fmt.Errorf("wtx not configured. run: wtx config")
+	if err != nil || !exists {
+		if err := ensureConfigReady(); err != nil {
+			return err
+		}
 	}
 
 	lockMgr := NewLockManager()
@@ -250,14 +249,13 @@ func runCheckout(branch string, create bool, baseOverride string, fetchOverride 
 }
 
 func checkoutDefaults(status WorktreeStatus) (string, bool) {
-	base := strings.TrimSpace(status.BaseRef)
-	if base == "" {
-		base = "origin/main"
-	}
+	base := resolveNewBranchBaseRef("", status.BaseRef, status.HasRemote)
 	fetch := true
 	if cfg, err := LoadConfig(); err == nil {
-		if v := strings.TrimSpace(cfg.NewBranchBaseRef); v != "" {
-			base = v
+		if status.HasRemote {
+			if v := strings.TrimSpace(cfg.NewBranchBaseRef); v != "" {
+				base = v
+			}
 		}
 		if cfg.NewBranchFetchFirst != nil {
 			fetch = *cfg.NewBranchFetchFirst
