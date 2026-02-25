@@ -4,6 +4,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	tea "github.com/charmbracelet/bubbletea"
 )
 
 func TestRenderCreateProgress_NewBranchFromBase(t *testing.T) {
@@ -92,5 +94,25 @@ func TestDraftBranchName(t *testing.T) {
 	got := draftBranchName(time.Unix(1700000000, 0))
 	if got != "draft-1700000000" {
 		t.Fatalf("expected deterministic draft name, got %q", got)
+	}
+}
+
+func TestModeBranchPick_AllowsTypingKAndJInFilter(t *testing.T) {
+	m := newModel()
+	m.mode = modeBranchPick
+	m.branchOptions = []string{"main", "release/kilo", "feature/jump"}
+	m.branchSuggestions = filterBranches(m.branchOptions, "")
+	m.branchInput.Focus()
+
+	updatedModel, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'k'}})
+	updated := updatedModel.(model)
+	if updated.branchInput.Value() != "k" {
+		t.Fatalf("expected filter input to include k, got %q", updated.branchInput.Value())
+	}
+
+	updatedModel, _ = updated.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'j'}})
+	updated = updatedModel.(model)
+	if updated.branchInput.Value() != "kj" {
+		t.Fatalf("expected filter input to include j, got %q", updated.branchInput.Value())
 	}
 }

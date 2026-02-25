@@ -954,12 +954,12 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.branchSuggestions = nil
 				m.branchIndex = 0
 				return m, nil
-			case "up", "k":
+			case "up":
 				if m.branchIndex > 0 {
 					m.branchIndex--
 				}
 				return m, nil
-			case "down", "j":
+			case "down":
 				if m.branchIndex < len(m.branchSuggestions)-1 {
 					m.branchIndex++
 				}
