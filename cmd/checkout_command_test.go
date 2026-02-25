@@ -46,11 +46,34 @@ func TestCheckoutDefaults_UseConfigValues(t *testing.T) {
 		t.Fatalf("save config: %v", err)
 	}
 
-	base, doFetch := checkoutDefaults(WorktreeStatus{BaseRef: "origin/main"})
+	base, doFetch := checkoutDefaults(WorktreeStatus{BaseRef: "origin/main", HasRemote: true})
 	if base != "origin/develop" {
 		t.Fatalf("expected config base ref, got %q", base)
 	}
 	if doFetch {
 		t.Fatalf("expected fetch false from config, got true")
+	}
+}
+
+func TestCheckoutDefaults_NoRemoteAlwaysUsesMain(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+
+	fetch := true
+	if err := SaveConfig(Config{
+		AgentCommand:          defaultAgentCommand,
+		NewBranchBaseRef:      "origin/develop",
+		NewBranchFetchFirst:   &fetch,
+		MainScreenBranchLimit: defaultMainScreenBranchLimit,
+	}); err != nil {
+		t.Fatalf("save config: %v", err)
+	}
+
+	base, doFetch := checkoutDefaults(WorktreeStatus{BaseRef: "feature/local-only", HasRemote: false})
+	if base != "main" {
+		t.Fatalf("expected main for no-remote repo, got %q", base)
+	}
+	if !doFetch {
+		t.Fatalf("expected fetch true from config, got false")
 	}
 }

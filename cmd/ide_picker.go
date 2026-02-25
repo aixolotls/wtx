@@ -196,13 +196,17 @@ func runIDEPicker(args []string) error {
 		basePath, _ = os.Getwd()
 	}
 
+	if err := ensureConfigReady(); err != nil {
+		return err
+	}
+
 	cfg, err := LoadConfig()
 	if err != nil {
 		return err
 	}
-	ideCmd := strings.TrimSpace(cfg.IDECommand)
-	if ideCmd == "" {
-		ideCmd = defaultIDECommand
+	_, ideCmd, err := ensureIDECommandConfigured(cfg)
+	if err != nil {
+		return err
 	}
 
 	p := tea.NewProgram(newDirPickerModel(basePath, ideCmd))

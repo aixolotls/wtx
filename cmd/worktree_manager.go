@@ -51,6 +51,7 @@ func (m *WorktreeManager) ListForStatusBase() WorktreeStatus {
 	}
 	status.InRepo = true
 	status.RepoRoot = repoRoot
+	status.HasRemote = strings.TrimSpace(preferredRemoteName(repoRoot, gitPath)) != ""
 	status.BaseRef = m.ResolveBaseRefForNewBranch()
 
 	worktrees, malformed, err := listWorktrees(repoRoot, gitPath)
