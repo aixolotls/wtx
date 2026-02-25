@@ -1,22 +1,27 @@
 package cmd
 
 import (
+	"archive/tar"
+	"compress/gzip"
 	"context"
+	"crypto/sha256"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
+	"net/http"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"regexp"
+	"runtime"
 	"strconv"
 	"strings"
 	"time"
 )
 
 const (
-	updateRepoModule       = "github.com/aixolotls/wtx"
+	updateRepoPath         = "aixolotls/wtx"
 	updateRepoGitURL       = "https://github.com/aixolotls/wtx.git"
 	defaultUpdateInterval  = 10 * time.Minute
 	startupUpdateTimeout   = 3 * time.Second
@@ -24,6 +29,8 @@ const (
 	installUpdateTimeout   = 2 * time.Minute
 	updateStateFileName    = "update-state.json"
 	wtxUpdateCommandFormat = "wtx %s -> %s available. Run: wtx update"
+	releaseArchiveFormat   = "wtx_%s_%s.tar.gz"
+	releaseDownloadFormat  = "https://github.com/%s/releases/download/%s/%s"
 )
 
 var releaseVersionPattern = regexp.MustCompile(`^v(\d+)\.(\d+)\.(\d+)$`)
@@ -215,21 +222,206 @@ func installVersion(ctx context.Context, targetVersion string) error {
 	if !isReleaseVersion(targetVersion) {
 		return fmt.Errorf("invalid target version %q", targetVersion)
 	}
-
-	baseEnv := []string{"GOPROXY=direct"}
-	installArgs := []string{"install", updateRepoModule + "@" + targetVersion}
-	output, err := runCommand(ctx, "go", installArgs, baseEnv)
-	if err == nil {
-		return nil
+	assetName, err := releaseArchiveName()
+	if err != nil {
+		return err
 	}
-	if !shouldRetryInstallForSumDB(output + "\n" + err.Error()) {
-		return fmt.Errorf("failed to install %s: %w\n%s", targetVersion, err, trimmedCommandOutput(output))
-	}
+	archiveURL := fmt.Sprintf(releaseDownloadFormat, updateRepoPath, targetVersion, assetName)
+	checksumsURL := fmt.Sprintf(releaseDownloadFormat, updateRepoPath, targetVersion, "checksums.txt")
 
-	fallbackEnv := append(baseEnv, "GONOSUMDB="+updateRepoModule)
-	fallbackOut, fallbackErr := runCommand(ctx, "go", installArgs, fallbackEnv)
-	if fallbackErr != nil {
-		return fmt.Errorf("failed to install %s (retry with GONOSUMDB also failed): %w\n%s", targetVersion, fallbackErr, trimmedCommandOutput(fallbackOut))
+	tmpDir, err := os.MkdirTemp("", "wtx-update-*")
+	if err != nil {
+		return fmt.Errorf("failed to create temp dir: %w", err)
+	}
+	defer os.RemoveAll(tmpDir)
+
+	archivePath := filepath.Join(tmpDir, assetName)
+	checksumsPath := filepath.Join(tmpDir, "checksums.txt")
+	extractedBinPath := filepath.Join(tmpDir, "wtx")
+
+	if err := downloadFile(ctx, archiveURL, archivePath); err != nil {
+		return fmt.Errorf("failed to download release archive: %w", err)
+	}
+	if err := downloadFile(ctx, checksumsURL, checksumsPath); err != nil {
+		return fmt.Errorf("failed to download checksums: %w", err)
+	}
+	if err := verifyArchiveChecksum(archivePath, checksumsPath, assetName); err != nil {
+		return fmt.Errorf("failed checksum verification: %w", err)
+	}
+	if err := extractBinaryFromTarGz(archivePath, extractedBinPath); err != nil {
+		return fmt.Errorf("failed to extract archive: %w", err)
+	}
+	if err := replaceCurrentExecutable(extractedBinPath); err != nil {
+		return fmt.Errorf("failed to install updated binary: %w", err)
+	}
+	return nil
+}
+
+func releaseArchiveName() (string, error) {
+	goos := strings.TrimSpace(runtime.GOOS)
+	switch goos {
+	case "darwin", "linux":
+	default:
+		return "", fmt.Errorf("unsupported OS for self-update: %s", goos)
+	}
+	goarch := strings.TrimSpace(runtime.GOARCH)
+	switch goarch {
+	case "amd64", "arm64":
+	default:
+		return "", fmt.Errorf("unsupported architecture for self-update: %s", goarch)
+	}
+	return fmt.Sprintf(releaseArchiveFormat, goos, goarch), nil
+}
+
+func downloadFile(ctx context.Context, url string, targetPath string) error {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+	if err != nil {
+		return err
+	}
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(io.LimitReader(resp.Body, 2048))
+		return fmt.Errorf("GET %s returned %s: %s", url, resp.Status, strings.TrimSpace(string(body)))
+	}
+	f, err := os.Create(targetPath)
+	if err != nil {
+		return err
+	}
+	if _, err := io.Copy(f, resp.Body); err != nil {
+		_ = f.Close()
+		return err
+	}
+	return f.Close()
+}
+
+func verifyArchiveChecksum(archivePath string, checksumsPath string, archiveName string) error {
+	checksumLine, err := checksumLineForFile(checksumsPath, archiveName)
+	if err != nil {
+		return err
+	}
+	want := strings.Fields(strings.TrimSpace(checksumLine))[0]
+	f, err := os.Open(archivePath)
+	if err != nil {
+		return err
+	}
+	defer f.Close()
+	h := sha256.New()
+	if _, err := io.Copy(h, f); err != nil {
+		return err
+	}
+	got := fmt.Sprintf("%x", h.Sum(nil))
+	if !strings.EqualFold(got, want) {
+		return fmt.Errorf("sha256 mismatch for %s: want %s, got %s", archiveName, want, got)
+	}
+	return nil
+}
+
+func checksumLineForFile(checksumsPath string, fileName string) (string, error) {
+	data, err := os.ReadFile(checksumsPath)
+	if err != nil {
+		return "", err
+	}
+	lines := strings.Split(string(data), "\n")
+	for _, line := range lines {
+		fields := strings.Fields(strings.TrimSpace(line))
+		if len(fields) < 2 {
+			continue
+		}
+		candidate := filepath.Base(fields[len(fields)-1])
+		if candidate == fileName {
+			return line, nil
+		}
+	}
+	return "", fmt.Errorf("checksum entry not found for %s", fileName)
+}
+
+func extractBinaryFromTarGz(archivePath string, outPath string) error {
+	in, err := os.Open(archivePath)
+	if err != nil {
+		return err
+	}
+	defer in.Close()
+	gzReader, err := gzip.NewReader(in)
+	if err != nil {
+		return err
+	}
+	defer gzReader.Close()
+	tarReader := tar.NewReader(gzReader)
+
+	for {
+		header, err := tarReader.Next()
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			return err
+		}
+		if header.Typeflag != tar.TypeReg {
+			continue
+		}
+		if filepath.Base(strings.TrimSpace(header.Name)) != "wtx" {
+			continue
+		}
+		out, err := os.OpenFile(outPath, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o755)
+		if err != nil {
+			return err
+		}
+		if _, err := io.Copy(out, tarReader); err != nil {
+			out.Close()
+			return err
+		}
+		if err := out.Close(); err != nil {
+			return err
+		}
+		return os.Chmod(outPath, 0o755)
+	}
+	return errors.New("binary wtx not found in archive")
+}
+
+func replaceCurrentExecutable(newBinPath string) error {
+	exePath, err := os.Executable()
+	if err != nil {
+		return err
+	}
+	if resolved, err := filepath.EvalSymlinks(exePath); err == nil && strings.TrimSpace(resolved) != "" {
+		exePath = resolved
+	}
+	exePath = filepath.Clean(strings.TrimSpace(exePath))
+	if exePath == "" {
+		return errors.New("current executable path is empty")
+	}
+	targetDir := filepath.Dir(exePath)
+	tmpPath := filepath.Join(targetDir, ".wtx-update-tmp")
+
+	src, err := os.Open(newBinPath)
+	if err != nil {
+		return err
+	}
+	defer src.Close()
+	out, err := os.OpenFile(tmpPath, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o755)
+	if err != nil {
+		return err
+	}
+	if _, err := io.Copy(out, src); err != nil {
+		out.Close()
+		_ = os.Remove(tmpPath)
+		return err
+	}
+	if err := out.Close(); err != nil {
+		_ = os.Remove(tmpPath)
+		return err
+	}
+	if err := os.Chmod(tmpPath, 0o755); err != nil {
+		_ = os.Remove(tmpPath)
+		return err
+	}
+	if err := os.Rename(tmpPath, exePath); err != nil {
+		_ = os.Remove(tmpPath)
+		return err
 	}
 	return nil
 }
@@ -249,18 +441,6 @@ func shouldRetryInstallForSumDB(output string) bool {
 		return true
 	}
 	return false
-}
-
-func trimmedCommandOutput(output string) string {
-	output = strings.TrimSpace(output)
-	if output == "" {
-		return ""
-	}
-	const maxLen = 1600
-	if len(output) <= maxLen {
-		return output
-	}
-	return output[:maxLen] + "\n..."
 }
 
 func latestVersionFromLSRemoteOutput(output string) (string, bool) {

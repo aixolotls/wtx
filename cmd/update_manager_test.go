@@ -4,6 +4,8 @@ import (
 	"context"
 	"errors"
 	"os"
+	"runtime"
+	"strings"
 	"testing"
 	"time"
 )
@@ -194,5 +196,36 @@ func TestCheckForUpdatesWithThrottle_DevBuildUsesInstallAvailability(t *testing.
 	}
 	if !result.UpdateAvailable {
 		t.Fatalf("expected dev build to be update-available when cached release exists")
+	}
+}
+
+func TestReleaseArchiveName(t *testing.T) {
+	name, err := releaseArchiveName()
+	if err != nil {
+		t.Fatalf("releaseArchiveName: %v", err)
+	}
+	want := "wtx_" + runtime.GOOS + "_" + runtime.GOARCH + ".tar.gz"
+	if name != want {
+		t.Fatalf("expected %q, got %q", want, name)
+	}
+}
+
+func TestChecksumLineForFile(t *testing.T) {
+	dir := t.TempDir()
+	path := dir + "/checksums.txt"
+	content := strings.Join([]string{
+		"abc123  wtx_darwin_arm64.tar.gz",
+		"def456  wtx_linux_amd64.tar.gz",
+		"",
+	}, "\n")
+	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+		t.Fatalf("write checksums: %v", err)
+	}
+	line, err := checksumLineForFile(path, "wtx_linux_amd64.tar.gz")
+	if err != nil {
+		t.Fatalf("checksumLineForFile: %v", err)
+	}
+	if strings.TrimSpace(line) != "def456  wtx_linux_amd64.tar.gz" {
+		t.Fatalf("unexpected line: %q", line)
 	}
 }
