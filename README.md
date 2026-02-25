@@ -1,17 +1,25 @@
 # wtx
-wtx is a monorepo-first worktrees CLI for AI agents.
-`wtx` starts each agent session in its own worktree for parallel agent workflows.
-Reuse + locking keeps parallel worktrees fast, isolated, and safe in large monorepos.
+wtx is a CLI that automates Git worktrees for AI agents. 
+
+In large repos, creating and bootstrapping worktrees is slow and manual.
+
+wtx manages a pool of reusable worktrees and automatically assigns one to the branch you select.
+
+Works in any terminal (ghostty, iTerm, etc.) and with any AI agent (Claude, Codex, ...).
 
 ![wtx screenshot](docs/assets/wtx-screenshot.png)
 
 ## Quickstart
 
 ```sh
-wtx checkout -b feat/first # or wco -b with aliases enabled
+wtx checkout -b feat/first
 # open another terminal
 wtx checkout -b feat/second
-# profit!
+```
+
+interactively:
+```sh
+wtx
 ```
 
 ## Installation
@@ -20,34 +28,16 @@ wtx checkout -b feat/second
 curl -fsSL https://raw.githubusercontent.com/aixolotls/wtx/main/install.sh | bash
 ```
 
-Installer env vars:
-- `WTX_VERSION`: install a specific release tag (for example `v1.2.3`).
-- `WTX_INSTALL_DIR`: install destination (default `~/.local/bin`).
-
 Alternative (requires Go):
-
 ```sh
 go install github.com/aixolotls/wtx@latest
 ```
 
-## Why wtx
-Common worktree flows treat worktrees as ephemeral. In large monorepos, that gets slow fast:
-- `git worktree add`
-- dependency installation
-- repeated IDE project indexing/setup
-
-`wtx` makes worktrees practical at scale with:
-- Worktree reuse: jump back into existing branch environments instead of recreating them.
-- Locking: prevent two sessions (or agents) from mutating the same worktree concurrently.
-
-That keeps parallel work fast, isolated, and safer for multi-agent workflows.
-
 ## Other Features
-- `wtx pr` / `wpr`: open PR branches directly into dedicated worktrees, so review/fix flows do not disrupt active feature branches.
-- `shell-split`: split terminals into separate worktree contexts, which is useful when monorepo tasks require side-by-side services, logs, or test loops.
-- `ide`: open branch-specific IDE sessions so indexing, local run configs, and edits stay scoped to the right worktree.
-- Terminal tab naming: keeps branch context visible while juggling many monorepo sessions.
-- GitHub integration: surfaces merge, review, and CI status where you are already working.
+- Open your ide easily on a worktree's subfolder, to avoid indexing tax in large repos (requires tmux)
+- Get an interactive shell quickly in the worktree (requires tmux)
+- Terminal tab naming: keeps branch context visible while juggling many monorepo sessions (requires tmux)
+- GitHub integration: surfaces merge, review, and CI status where you are already working
 
 ## License
 [MIT](LICENSE)
