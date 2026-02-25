@@ -55,6 +55,39 @@ func TestShouldFetchByBranch(t *testing.T) {
 	}
 }
 
+func TestNormalizeFetchForBaseRef(t *testing.T) {
+	if got := normalizeFetchForBaseRef("main", true); got {
+		t.Fatalf("expected local base ref to disable fetch")
+	}
+	if got := normalizeFetchForBaseRef("origin/main", true); !got {
+		t.Fatalf("expected remote base ref to keep fetch enabled")
+	}
+	if got := normalizeFetchForBaseRef("main", false); got {
+		t.Fatalf("expected local base ref to keep fetch disabled")
+	}
+}
+
+func TestShouldPromptFetchDefault(t *testing.T) {
+	if shouldPromptFetchDefault("main", false, true) {
+		t.Fatalf("expected local base ref to suppress fetch-default prompt")
+	}
+	if !shouldPromptFetchDefault("origin/main", false, true) {
+		t.Fatalf("expected remote base ref to prompt when fetch preference differs")
+	}
+	if shouldPromptFetchDefault("origin/main", true, true) {
+		t.Fatalf("expected no prompt when fetch preference matches default")
+	}
+}
+
+func TestLooksLikeLocalBranchRef(t *testing.T) {
+	if !looksLikeLocalBranchRef("main") {
+		t.Fatalf("expected main to be treated as local")
+	}
+	if looksLikeLocalBranchRef("origin/main") {
+		t.Fatalf("expected origin/main to be treated as remote")
+	}
+}
+
 func TestDraftBranchName(t *testing.T) {
 	got := draftBranchName(time.Unix(1700000000, 0))
 	if got != "draft-1700000000" {

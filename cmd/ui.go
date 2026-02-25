@@ -657,7 +657,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					defaultBase := resolveNewBranchBaseRef(m.openDefaultBaseRef, m.status.BaseRef, m.status.HasRemote)
 					branch := ""
 					baseRef := defaultBase
-					fetch := m.openDefaultFetch
+					fetch := normalizeFetchForBaseRef(baseRef, m.openDefaultFetch)
 					m.openStage = openStageNewBranchConfig
 					m.openFormBranchPtr = &branch
 					m.openFormBaseRefPtr = &baseRef
@@ -1245,7 +1245,7 @@ func (m model) handleConfirmDone() (tea.Model, tea.Cmd) {
 			m.openDefaultBaseRef = strings.TrimSpace(m.openTargetBaseRef)
 			saveCmd = saveOpenDefaultsCmd(m.openDefaultBaseRef, m.openDefaultFetch)
 		}
-		if m.openTargetFetch != m.openDefaultFetch {
+		if shouldPromptFetchDefault(m.openTargetBaseRef, m.openTargetFetch, m.openDefaultFetch) {
 			m.confirmResult = false
 			m.confirmKind = confirmOpenFetchDefault
 			m.confirmForm = newConfirmForm(
@@ -1329,6 +1329,7 @@ func (m model) submitOpenNewBranchForm() (tea.Model, tea.Cmd) {
 	if strings.TrimSpace(base) == "" {
 		base = resolveNewBranchBaseRef("", m.status.BaseRef, m.status.HasRemote)
 	}
+	fetch = normalizeFetchForBaseRef(base, fetch)
 	m.openTargetBranch = branch
 	m.openTargetIsNew = true
 	m.openTargetBaseRef = base
@@ -1349,7 +1350,7 @@ func (m model) submitOpenNewBranchForm() (tea.Model, tea.Cmd) {
 		)
 		return m, m.confirmForm.Init()
 	}
-	if m.openTargetFetch != m.openDefaultFetch {
+	if shouldPromptFetchDefault(m.openTargetBaseRef, m.openTargetFetch, m.openDefaultFetch) {
 		m.confirmResult = false
 		m.confirmKind = confirmOpenFetchDefault
 		m.confirmForm = newConfirmForm(
@@ -1360,6 +1361,28 @@ func (m model) submitOpenNewBranchForm() (tea.Model, tea.Cmd) {
 		return m, m.confirmForm.Init()
 	}
 	return m.continueOpenTargetSelection(nil)
+}
+
+func normalizeFetchForBaseRef(baseRef string, fetch bool) bool {
+	if looksLikeLocalBranchRef(baseRef) {
+		return false
+	}
+	return fetch
+}
+
+func shouldPromptFetchDefault(baseRef string, targetFetch bool, defaultFetch bool) bool {
+	if looksLikeLocalBranchRef(baseRef) {
+		return false
+	}
+	return targetFetch != defaultFetch
+}
+
+func looksLikeLocalBranchRef(baseRef string) bool {
+	baseRef = strings.TrimSpace(baseRef)
+	if baseRef == "" {
+		return false
+	}
+	return !strings.Contains(baseRef, "/")
 }
 
 func (m model) continueOpenTargetSelection(saveCmd tea.Cmd) (tea.Model, tea.Cmd) {
@@ -1908,6 +1931,8 @@ var (
 	branchStyle         = lipgloss.NewStyle().Foreground(lipgloss.Color("15")).Bold(true)
 	branchInlineStyle   = lipgloss.NewStyle().Bold(true)
 	warnStyle           = lipgloss.NewStyle().Foreground(lipgloss.Color("3")).Bold(true)
+	tmuxStatusDisabledHintStyle = lipgloss.NewStyle().
+					Foreground(lipgloss.Color("#E8DFA5"))
 	updateHintStyle     = lipgloss.NewStyle().Foreground(lipgloss.Color("239"))
 	inputStyle          = lipgloss.NewStyle().
 				Padding(0, 1)
