@@ -1,11 +1,12 @@
 # wtx
 wtx is a CLI that automates Git worktrees for AI agents. 
 
-In large repos, creating and bootstrapping worktrees is slow and manual.
-
-wtx manages a pool of reusable worktrees and automatically assigns one to the branch you select.
-
 Works in any terminal (ghostty, iTerm, etc.) and with any AI agent (Claude, Codex, ...).
+
+## why wtx
+In large repos, creating and managing worktrees becomes slow and manual. Treating them as disposable per branch does not scale.
+
+wtx keeps a reusable pool of worktrees and assigns them to branches automatically, so parallel AI agents can use them without repeated bootstrap.
 
 ![wtx screenshot](docs/assets/wtx-screenshot-v2.png)
 

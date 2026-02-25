@@ -119,10 +119,13 @@ main() {
   release_url="$(printf '%s\n' "$urls" | sed -n '1p')"
   checksums_url="$(printf '%s\n' "$urls" | sed -n '2p')"
 
+  local archive_name
+  archive_name="$(basename "$release_url")"
+
   local tmp_dir archive_path checksums_path extracted_path target_path
   tmp_dir="$(mktemp -d)"
   TMP_DIR="$tmp_dir"
-  archive_path="${tmp_dir}/wtx.tar.gz"
+  archive_path="${tmp_dir}/${archive_name}"
   checksums_path="${tmp_dir}/checksums.txt"
   extracted_path="${tmp_dir}/${BINARY_NAME}"
   target_path="${INSTALL_DIR}/${BINARY_NAME}"
