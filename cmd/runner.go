@@ -31,14 +31,17 @@ func (r *Runner) RunInWorktree(worktreePath string, branch string, lock *Worktre
 	}
 	branch = strings.TrimSpace(branch)
 
+	if err := ensureConfigReady(); err != nil {
+		return RunResult{}, err
+	}
+
 	cfg, err := LoadConfig()
 	if err != nil {
 		return RunResult{}, err
 	}
-
-	runCmd := strings.TrimSpace(cfg.AgentCommand)
-	if runCmd == "" {
-		runCmd = defaultAgentCommand
+	_, runCmd, err := ensureAgentCommandConfigured(cfg)
+	if err != nil {
+		return RunResult{}, err
 	}
 
 	return r.runInWorktree(worktreePath, branch, lock, false, runCmd)

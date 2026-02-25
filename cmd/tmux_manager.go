@@ -48,6 +48,9 @@ func ensureFreshTmuxSession(args []string) (bool, error) {
 		"-e", "WTX_PARENT_TERMINAL=" + parentTerminal,
 		"-s", session, "-c", cwd,
 	}
+	if configDir := strings.TrimSpace(os.Getenv(configDirOverrideEnv)); configDir != "" {
+		tmuxArgs = append(tmuxArgs, "-e", configDirOverrideEnv+"="+configDir)
+	}
 	cmd := exec.Command("tmux", tmuxArgs...)
 	out, err := cmd.CombinedOutput()
 	if err != nil {
