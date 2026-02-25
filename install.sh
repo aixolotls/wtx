@@ -5,6 +5,7 @@ REPO="${WTX_REPO:-aixolotls/wtx}"
 BINARY_NAME="wtx"
 VERSION="${WTX_VERSION:-latest}"
 INSTALL_DIR="${WTX_INSTALL_DIR:-${INSTALL_DIR:-$HOME/.local/bin}}"
+TMP_DIR=""
 
 log() {
   printf '%s\n' "$*"
@@ -98,6 +99,12 @@ verify_checksum() {
   log "sha256sum/shasum not found; skipping checksum verification"
 }
 
+cleanup_tmp_dir() {
+  if [ -n "${TMP_DIR:-}" ]; then
+    rm -rf -- "${TMP_DIR}"
+  fi
+}
+
 main() {
   require_cmd uname
   require_cmd tar
@@ -114,11 +121,12 @@ main() {
 
   local tmp_dir archive_path checksums_path extracted_path target_path
   tmp_dir="$(mktemp -d)"
+  TMP_DIR="$tmp_dir"
   archive_path="${tmp_dir}/wtx.tar.gz"
   checksums_path="${tmp_dir}/checksums.txt"
   extracted_path="${tmp_dir}/${BINARY_NAME}"
   target_path="${INSTALL_DIR}/${BINARY_NAME}"
-  trap 'rm -rf "${tmp_dir}"' EXIT
+  trap cleanup_tmp_dir EXIT
 
   log "Downloading ${release_url}"
   download "$release_url" "$archive_path"
