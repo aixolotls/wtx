@@ -368,6 +368,7 @@ func renderOpenScreen(m model) string {
 	} else {
 		b.WriteString(actionNormalStyle.Render(newBranchLine) + "\n")
 	}
+	branchColWidth := openBranchColumnWidth(m.openBranches, m.openLockedBranches)
 	filtered := openFilteredIndices(m.openTypeahead, m.openBranches)
 	for _, branchIndex := range filtered {
 		branch := m.openBranches[branchIndex]
@@ -381,7 +382,7 @@ func renderOpenScreen(m model) string {
 				pr = termenv.Hyperlink(branch.PRURL, pr)
 			}
 		}
-		line := fmt.Sprintf("%s%-40s %s", cursor, branch.Name, pr)
+		line := fmt.Sprintf("%s%-*s %s", cursor, branchColWidth, branch.Name, pr)
 		if m.openSelected == branchIndex+1 {
 			b.WriteString(actionSelectedStyle.Render(line) + "\n")
 		} else {
@@ -411,7 +412,7 @@ func renderOpenScreen(m model) string {
 					pr = termenv.Hyperlink(branch.PRURL, pr)
 				}
 			}
-			line := fmt.Sprintf("  %-40s %s", branch.Name, pr)
+			line := fmt.Sprintf("  %-*s %s", branchColWidth, branch.Name, pr)
 			b.WriteString(secondaryStyle.Render(line) + "\n")
 		}
 	}
@@ -430,10 +431,34 @@ func renderOpenScreen(m model) string {
 		b.WriteString(renderUpdateHint(m.updateHint, m.updateHintIsError))
 		b.WriteString("\n")
 	}
+	if !tmuxAvailable() {
+		b.WriteString(tmuxStatusDisabledHintStyle.Render("tmux not detected; status line is disabled."))
+		b.WriteString("\n")
+	}
 
 	b.WriteString("\n")
 	b.WriteString("Use up/down or type to search by branch/PR. Enter selects. Ctrl+R refreshes. Ctrl+D debug. q quits.\n")
 	return b.String()
+}
+
+func openBranchColumnWidth(openBranches []openBranchOption, lockedBranches []openBranchOption) int {
+	maxLen := 0
+	for _, branch := range openBranches {
+		nameLen := len([]rune(strings.TrimSpace(branch.Name)))
+		if nameLen > maxLen {
+			maxLen = nameLen
+		}
+	}
+	for _, branch := range lockedBranches {
+		nameLen := len([]rune(strings.TrimSpace(branch.Name)))
+		if nameLen > maxLen {
+			maxLen = nameLen
+		}
+	}
+	if maxLen == 0 {
+		maxLen = len([]rune("<new branch>"))
+	}
+	return maxLen
 }
 
 func debugWorktreeState(slot openSlotState) string {
