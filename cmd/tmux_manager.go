@@ -482,6 +482,9 @@ func tmuxBindKeyGlobal(key string, command string) {
 }
 
 func resolveStatusCommandBinary() string {
+	if p, err := exec.LookPath("wtx"); err == nil && strings.TrimSpace(p) != "" && fileLooksExecutable(p) {
+		return p
+	}
 	if v := strings.TrimSpace(os.Getenv("WTX_STATUS_BIN")); v != "" {
 		if fileLooksExecutable(v) {
 			return v
@@ -498,13 +501,13 @@ func resolveStatusCommandBinary() string {
 
 func resolveAgentLifecycleBinary() string {
 	candidates := make([]string, 0, 3)
-	if p, err := os.Executable(); err == nil && strings.TrimSpace(p) != "" && fileLooksExecutable(p) {
+	if p, err := exec.LookPath("wtx"); err == nil && strings.TrimSpace(p) != "" && fileLooksExecutable(p) {
 		candidates = append(candidates, p)
 	}
 	if v := strings.TrimSpace(os.Getenv("WTX_STATUS_BIN")); v != "" && fileLooksExecutable(v) {
 		candidates = append(candidates, v)
 	}
-	if p, err := exec.LookPath("wtx"); err == nil && strings.TrimSpace(p) != "" && fileLooksExecutable(p) {
+	if p, err := os.Executable(); err == nil && strings.TrimSpace(p) != "" && fileLooksExecutable(p) {
 		candidates = append(candidates, p)
 	}
 	for _, candidate := range candidates {

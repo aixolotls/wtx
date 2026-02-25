@@ -312,6 +312,21 @@ func TestRenameCurrentBranch_Succeeds(t *testing.T) {
 	}
 }
 
+func TestRenameCurrentBranch_TargetAlreadyExists(t *testing.T) {
+	repo := initRenameTestRepo(t)
+	runGitInRepo(t, repo, "checkout", "-b", "before-rename")
+	runGitInRepo(t, repo, "checkout", "-b", "existing")
+	runGitInRepo(t, repo, "checkout", "before-rename")
+
+	err := renameCurrentBranch(repo, "existing")
+	if err == nil {
+		t.Fatalf("expected rename error when target exists")
+	}
+	if !strings.Contains(err.Error(), "already exists") {
+		t.Fatalf("expected clear exists error, got %v", err)
+	}
+}
+
 func TestRenameCurrentBranch_TimesOut(t *testing.T) {
 	repo := initRenameTestRepo(t)
 	runGitInRepo(t, repo, "checkout", "-b", "before-rename")
