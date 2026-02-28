@@ -73,12 +73,14 @@ func ensureFreshTmuxSession(args []string) (bool, error) {
 		return true, nil
 	}
 
-	launchErrCh := make(chan error, 1)
+	launchToken := fmt.Sprintf("wtx-launch-%d", time.Now().UnixNano())
+	if err := launchCommandInSessionAfterSignal(session, bin, args[1:], launchToken); err != nil {
+		return false, err
+	}
+
 	go func() {
-		// Attach first, then launch the command in the session pane to avoid
-		// attach races where the session disappears before the client attaches.
-		time.Sleep(120 * time.Millisecond)
-		launchErrCh <- launchCommandInSession(session, bin, args[1:])
+		waitForSessionClientAttach(session, 3*time.Second)
+		_ = tmuxSignal(launchToken)
 	}()
 
 	attach := exec.Command("tmux", "attach-session", "-t", session)
@@ -87,13 +89,6 @@ func ensureFreshTmuxSession(args []string) (bool, error) {
 	attach.Stderr = os.Stderr
 	if err := attach.Run(); err != nil {
 		return false, err
-	}
-	select {
-	case launchErr := <-launchErrCh:
-		if launchErr != nil {
-			return false, launchErr
-		}
-	default:
 	}
 	return true, nil
 }
@@ -132,6 +127,47 @@ func launchCommandInSession(sessionID string, bin string, args []string) error {
 	}
 	// Run directly in the pane so the command isn't visibly typed into the shell.
 	return exec.Command("tmux", "respawn-pane", "-k", "-t", sessionID+":0.0", command).Run()
+}
+
+func launchCommandInSessionAfterSignal(sessionID string, bin string, args []string, signal string) error {
+	sessionID = strings.TrimSpace(sessionID)
+	bin = strings.TrimSpace(bin)
+	signal = strings.TrimSpace(signal)
+	if sessionID == "" || bin == "" || signal == "" {
+		return fmt.Errorf("session, binary, and signal are required")
+	}
+	command := shellQuote(bin)
+	for _, arg := range args {
+		command += " " + shellQuote(arg)
+	}
+	waitCommand := "tmux wait-for " + shellQuote(signal) + "; exec " + command
+	return exec.Command("tmux", "respawn-pane", "-k", "-t", sessionID+":0.0", "/bin/sh", "-lc", waitCommand).Run()
+}
+
+func tmuxSignal(signal string) error {
+	signal = strings.TrimSpace(signal)
+	if signal == "" {
+		return nil
+	}
+	return exec.Command("tmux", "wait-for", "-S", signal).Run()
+}
+
+func waitForSessionClientAttach(sessionID string, timeout time.Duration) {
+	sessionID = strings.TrimSpace(sessionID)
+	if sessionID == "" {
+		return
+	}
+	deadline := time.Now().Add(timeout)
+	for {
+		out, err := exec.Command("tmux", "list-clients", "-t", sessionID, "-F", "#{client_pid}").Output()
+		if err == nil && strings.TrimSpace(string(out)) != "" {
+			return
+		}
+		if time.Now().After(deadline) {
+			return
+		}
+		time.Sleep(25 * time.Millisecond)
+	}
 }
 
 func resolveSelfBinary(args []string) (string, error) {
@@ -356,25 +392,16 @@ func applyWTXSessionDefaults(sessionID string, enableDestroyUnattached bool) {
 	for _, option := range wtxPaneStyleOptions() {
 		tmuxSetWindowOption(sessionID, option.key, option.value)
 	}
+	keyTable := tmuxSessionKeyTable(sessionID)
+	tmuxSetOption(sessionID, "key-table", keyTable)
+	configureTmuxStatusRefreshHooks(sessionID)
 	configureTmuxPaneBadgeBehavior(sessionID)
-	// Stop hijacking Option+Left/Right so editor navigation keeps working.
-	_ = exec.Command("tmux", "unbind-key", "-n", "M-Left").Run()
-	_ = exec.Command("tmux", "unbind-key", "-n", "M-Right").Run()
-	// Remove legacy resize bindings so resize only happens on Option+Shift+Up/Down.
-	_ = exec.Command("tmux", "unbind-key", "-n", "M-Up").Run()
-	_ = exec.Command("tmux", "unbind-key", "-n", "M-Down").Run()
-	_ = exec.Command("tmux", "unbind-key", "-n", "M-S-Up").Run()
-	_ = exec.Command("tmux", "unbind-key", "-n", "M-S-Down").Run()
-	// Preserve Enter variants for the pane program (for example Shift+Enter in coding agents).
-	_ = exec.Command("tmux", "unbind-key", "-n", "Enter").Run()
-	_ = exec.Command("tmux", "unbind-key", "-n", "S-Enter").Run()
-	_ = exec.Command("tmux", "unbind-key", "-n", "C-Enter").Run()
-	_ = exec.Command("tmux", "unbind-key", "-n", "M-Enter").Run()
+
 	// Only resize when split panes are present.
-	_ = exec.Command("tmux", "bind-key", "-r", "-n", "M-Up", "if-shell", "-F", "#{>:#{window_panes},1}", "select-pane -U").Run()
-	_ = exec.Command("tmux", "bind-key", "-r", "-n", "M-Down", "if-shell", "-F", "#{>:#{window_panes},1}", "select-pane -D").Run()
-	_ = exec.Command("tmux", "bind-key", "-r", "-n", "M-S-Up", "if-shell", "-F", "#{>:#{window_panes},1}", "resize-pane -U 3").Run()
-	_ = exec.Command("tmux", "bind-key", "-r", "-n", "M-S-Down", "if-shell", "-F", "#{>:#{window_panes},1}", "resize-pane -D 3").Run()
+	_ = exec.Command("tmux", "bind-key", "-r", "-T", keyTable, "M-Up", "if-shell", "-F", "#{>:#{window_panes},1}", "select-pane -U").Run()
+	_ = exec.Command("tmux", "bind-key", "-r", "-T", keyTable, "M-Down", "if-shell", "-F", "#{>:#{window_panes},1}", "select-pane -D").Run()
+	_ = exec.Command("tmux", "bind-key", "-r", "-T", keyTable, "M-S-Up", "if-shell", "-F", "#{>:#{window_panes},1}", "resize-pane -U 3").Run()
+	_ = exec.Command("tmux", "bind-key", "-r", "-T", keyTable, "M-S-Down", "if-shell", "-F", "#{>:#{window_panes},1}", "resize-pane -D 3").Run()
 	// Preserve modified key chords (for example Shift+Enter in coding agents) inside wtx-managed tmux sessions.
 	tmuxSetWindowOption(sessionID, "xterm-keys", "on")
 	tmuxSetGlobalWindowOption("xterm-keys", "on")
@@ -383,14 +410,6 @@ func applyWTXSessionDefaults(sessionID string, enableDestroyUnattached bool) {
 	tmuxAppendServerOption("terminal-features", ",*:extkeys")
 	tmuxAppendGlobalOption("terminal-features", ",*:extkeys")
 
-	// Keep direct shortcuts while also offering a single actions popup.
-	_ = exec.Command("tmux", "unbind-key", "-n", "C-s").Run()
-	_ = exec.Command("tmux", "unbind-key", "-n", "C-a").Run()
-	_ = exec.Command("tmux", "unbind-key", "-n", "C-p").Run()
-	_ = exec.Command("tmux", "unbind-key", "-n", "C-l").Run()
-	_ = exec.Command("tmux", "unbind-key", "-n", "C-b").Run()
-	_ = exec.Command("tmux", "unbind-key", "-n", "M-a").Run()
-	_ = exec.Command("tmux", "unbind-key", "-n", "M-A").Run()
 	configureTmuxActionBindings(sessionID, resolveAgentLifecycleBinary())
 }
 
@@ -442,21 +461,53 @@ func tmuxSessionWindowIDs(sessionID string) []string {
 }
 
 func configureTmuxActionBindings(sessionID string, wtxBin string) {
-	_ = sessionID
+	sessionID = strings.TrimSpace(sessionID)
+	if sessionID == "" {
+		return
+	}
 	if strings.TrimSpace(wtxBin) == "" {
 		return
 	}
+	keyTable := tmuxSessionKeyTable(sessionID)
 	actionsPopupCmd := tmuxActionsPopupCommand(wtxBin)
-	splitCmd := tmuxActionsCommandWithAction(wtxBin, tmuxActionShellSplit)
-	prCmd := tmuxActionsCommandWithAction(wtxBin, tmuxActionPR)
-	ideCmd := tmuxActionsCommandWithAction(wtxBin, tmuxActionIDE)
+	splitCmd := tmuxActionsCommandWithPathAndAction(wtxBin, "#{pane_current_path}", tmuxActionShellSplit)
+	prCmd := tmuxActionsCommandWithPathAndAction(wtxBin, "#{pane_current_path}", tmuxActionPR)
+	ideCmd := tmuxActionsCommandWithPathAndAction(wtxBin, "#{pane_current_path}", tmuxActionIDE)
+	backCmd := tmuxActionsCommandWithPathAndAction(wtxBin, "#{pane_current_path}", tmuxActionBack)
 
-	_ = exec.Command("tmux", "bind-key", "-n", "C-a", "popup", "-E", "-w", "72", "-h", "20", actionsPopupCmd).Run()
-	_ = exec.Command("tmux", "bind-key", "-n", "C-s", "run-shell", splitCmd).Run()
-	_ = exec.Command("tmux", "bind-key", "-n", "C-p", "run-shell", prCmd).Run()
-	_ = exec.Command("tmux", "bind-key", "-n", "C-l", "popup", "-E", "-w", "60", "-h", "20", ideCmd).Run()
-	backCmd := tmuxActionsCommandWithAction(wtxBin, tmuxActionBack)
-	_ = exec.Command("tmux", "bind-key", "-n", "C-b", "run-shell", backCmd).Run()
+	_ = exec.Command("tmux", "bind-key", "-T", keyTable, "C-a", "popup", "-E", "-d", "#{pane_current_path}", "-w", "72", "-h", "20", actionsPopupCmd).Run()
+	_ = exec.Command("tmux", "bind-key", "-T", keyTable, "C-s", "run-shell", "-b", splitCmd).Run()
+	_ = exec.Command("tmux", "bind-key", "-T", keyTable, "C-p", "run-shell", "-b", prCmd).Run()
+	_ = exec.Command("tmux", "bind-key", "-T", keyTable, "C-l", "popup", "-E", "-d", "#{pane_current_path}", "-w", "60", "-h", "20", ideCmd).Run()
+	_ = exec.Command("tmux", "bind-key", "-T", keyTable, "C-w", "run-shell", "-b", backCmd).Run()
+}
+
+func tmuxSessionKeyTable(sessionID string) string {
+	sessionID = strings.TrimSpace(sessionID)
+	if sessionID == "" {
+		return "root"
+	}
+	replacer := strings.NewReplacer("$", "s", "@", "w", "%", "p", ":", "_", ".", "_", "-", "_")
+	return "wtx_" + replacer.Replace(sessionID)
+}
+
+func configureTmuxStatusRefreshHooks(sessionID string) {
+	sessionID = strings.TrimSpace(sessionID)
+	if sessionID == "" {
+		return
+	}
+	refreshCmd := "refresh-client -S"
+	hooks := []string{
+		"after-split-window",
+		"after-kill-pane",
+		"after-new-window",
+		"after-kill-window",
+		"after-rename-window",
+		"client-session-changed",
+	}
+	for _, hook := range hooks {
+		_ = exec.Command("tmux", "set-hook", "-q", "-t", sessionID, hook, refreshCmd).Run()
+	}
 }
 
 func configureTmuxStatus(sessionID string, leftLength string, interval string) {
