@@ -352,9 +352,11 @@ func applyWTXSessionDefaults(sessionID string, enableDestroyUnattached bool) {
 	}
 	// Keep wheel scrolling and mouse interactions working across modern terminals.
 	tmuxSetOption(sessionID, "mouse", "on")
-	// Keep pane separators aligned with WTX brand colors instead of tmux defaults.
-	tmuxSetOption(sessionID, "pane-border-style", "fg=#3d2a5c")
-	tmuxSetOption(sessionID, "pane-active-border-style", "fg=#6a4b9c")
+	// Style split panes so inactive panes are visually de-emphasized and separators are clearer.
+	for _, option := range wtxPaneStyleOptions() {
+		tmuxSetWindowOption(sessionID, option.key, option.value)
+	}
+	configureTmuxPaneBadgeBehavior(sessionID)
 	// Stop hijacking Option+Left/Right so editor navigation keeps working.
 	_ = exec.Command("tmux", "unbind-key", "-n", "M-Left").Run()
 	_ = exec.Command("tmux", "unbind-key", "-n", "M-Right").Run()
@@ -390,6 +392,53 @@ func applyWTXSessionDefaults(sessionID string, enableDestroyUnattached bool) {
 	_ = exec.Command("tmux", "unbind-key", "-n", "M-a").Run()
 	_ = exec.Command("tmux", "unbind-key", "-n", "M-A").Run()
 	configureTmuxActionBindings(sessionID, resolveAgentLifecycleBinary())
+}
+
+type tmuxOption struct {
+	key   string
+	value string
+}
+
+func wtxPaneStyleOptions() []tmuxOption {
+	return []tmuxOption{
+		{key: "pane-border-style", value: "fg=#1e1530"},
+		{key: "pane-active-border-style", value: "fg=#6a4b9c"},
+		{key: "pane-border-lines", value: "heavy"},
+		{key: "pane-border-status", value: "off"},
+		{key: "pane-border-format", value: "#{?#{&&:#{pane_active},#{>:#{window_panes},1}},#[bold fg=#1e1530 bg=#6a4b9c] ACTIVE #[default],}"},
+	}
+}
+
+func configureTmuxPaneBadgeBehavior(sessionID string) {
+	sessionID = strings.TrimSpace(sessionID)
+	if sessionID == "" {
+		return
+	}
+	updateCmd := `if -F "#{>:#{window_panes},1}" "set-window-option -q -t '#{window_id}' pane-border-status top" "set-window-option -q -t '#{window_id}' pane-border-status off"`
+	_ = exec.Command("tmux", "set-hook", "-q", "-t", sessionID, "after-split-window", updateCmd).Run()
+	_ = exec.Command("tmux", "set-hook", "-q", "-t", sessionID, "after-kill-pane", updateCmd).Run()
+	_ = exec.Command("tmux", "set-hook", "-q", "-t", sessionID, "after-join-pane", updateCmd).Run()
+	_ = exec.Command("tmux", "set-hook", "-q", "-t", sessionID, "after-break-pane", updateCmd).Run()
+	for _, windowID := range tmuxSessionWindowIDs(sessionID) {
+		_ = exec.Command("tmux", "if-shell", "-F", "-t", windowID, "#{>:#{window_panes},1}", "set-window-option -q -t "+windowID+" pane-border-status top", "set-window-option -q -t "+windowID+" pane-border-status off").Run()
+	}
+}
+
+func tmuxSessionWindowIDs(sessionID string) []string {
+	out, err := exec.Command("tmux", "list-windows", "-t", sessionID, "-F", "#{window_id}").Output()
+	if err != nil {
+		return nil
+	}
+	lines := strings.Split(strings.TrimSpace(string(out)), "\n")
+	ids := make([]string, 0, len(lines))
+	for _, line := range lines {
+		id := strings.TrimSpace(line)
+		if id == "" {
+			continue
+		}
+		ids = append(ids, id)
+	}
+	return ids
 }
 
 func configureTmuxActionBindings(sessionID string, wtxBin string) {
