@@ -136,8 +136,8 @@ func TestTmuxActionsModel_ViewShowsShortcutHints(t *testing.T) {
 	if !strings.Contains(view, "/back") {
 		t.Fatalf("expected /back alias in view, got %q", view)
 	}
-	if !strings.Contains(view, "ctrl+b") {
-		t.Fatalf("expected ctrl+b hint in view rows, got %q", view)
+	if !strings.Contains(view, "ctrl+w") {
+		t.Fatalf("expected ctrl+w hint in view rows, got %q", view)
 	}
 	if !strings.Contains(view, "ctrl+r") {
 		t.Fatalf("expected ctrl+r hint in view rows, got %q", view)
@@ -271,6 +271,13 @@ func TestPRSummaryHasNumber(t *testing.T) {
 	}
 	if prSummaryHasNumber("PR - | CI - | GH - | Review -") {
 		t.Fatalf("expected empty PR summary to not match")
+	}
+}
+
+func TestNormalizeTmuxDisplayMessage(t *testing.T) {
+	got := normalizeTmuxDisplayMessage("  no pull requests found\nfor branch \"x\"  ")
+	if got != `no pull requests found for branch "x"` {
+		t.Fatalf("unexpected normalized message: %q", got)
 	}
 }
 

@@ -59,7 +59,7 @@ func newTmuxActionsModel(basePath string, prAvailable bool, canOpenITermTab bool
 	terminalName := terminalProgramLabel()
 	windowTerminalName := terminalWindowProgramLabel()
 	items := []tmuxActionItem{
-		{Alias: "back", Label: "Back to WTX", Description: "Back to WTX (stop agent)", Keybinding: "ctrl+b", Action: tmuxActionBack},
+		{Alias: "back", Label: "Back to WTX", Description: "Back to WTX (stop agent)", Keybinding: "ctrl+w", Action: tmuxActionBack},
 		{Alias: "ide", Label: "Open IDE", Description: "Open IDE", Keybinding: "ctrl+l", Action: tmuxActionIDE},
 		{Alias: "pr", Label: "Open PR", Description: "Open PR", Keybinding: "ctrl+p", Action: tmuxActionPR, Disabled: !prAvailable},
 		{Alias: "rename", Label: "Rename branch", Description: "Rename branch", Keybinding: "ctrl+r", Action: tmuxActionRename},
@@ -90,7 +90,7 @@ func (m tmuxActionsModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case "ctrl+c", "esc":
 			m.cancel = true
 			return m, tea.Quit
-		case "ctrl+b":
+		case "ctrl+b", "ctrl+w":
 			return m.selectAction(tmuxActionBack)
 		case "ctrl+s":
 			return m.selectAction(tmuxActionShellSplit)
@@ -379,7 +379,15 @@ func runTmuxAction(basePath string, sourcePane string, action tmuxAction, rename
 	case tmuxActionPR:
 		cmd := exec.Command("gh", "pr", "view", "--web")
 		cmd.Dir = basePath
-		return cmd.Run()
+		out, err := cmd.CombinedOutput()
+		if err != nil {
+			msg := commandErrorMessage(err, out)
+			if showTmuxActionErrorMessage(msg) {
+				return nil
+			}
+			return fmt.Errorf("%s", msg)
+		}
+		return nil
 	case tmuxActionRename:
 		clearPopupScreen()
 		if strings.TrimSpace(renameTo) != "" {
@@ -672,6 +680,40 @@ end run
 
 func clearPopupScreen() {
 	fmt.Print("\x1b[2J\x1b[H")
+}
+
+func commandErrorMessage(err error, output []byte) string {
+	if text := strings.TrimSpace(string(output)); text != "" {
+		return text
+	}
+	if err != nil {
+		return strings.TrimSpace(err.Error())
+	}
+	return "command failed"
+}
+
+func showTmuxActionErrorMessage(message string) bool {
+	message = normalizeTmuxDisplayMessage(message)
+	if message == "" || strings.TrimSpace(os.Getenv("TMUX")) == "" {
+		return false
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), tmuxStatusRefreshTimeout)
+	defer cancel()
+	return exec.CommandContext(ctx, "tmux", "display-message", "-d", "5000", message).Run() == nil
+}
+
+func normalizeTmuxDisplayMessage(message string) string {
+	message = strings.TrimSpace(message)
+	if message == "" {
+		return ""
+	}
+	lines := strings.Fields(message)
+	message = strings.Join(lines, " ")
+	const maxLen = 220
+	if len(message) <= maxLen {
+		return message
+	}
+	return message[:maxLen-3] + "..."
 }
 
 func tmuxActionsPopupCommand(wtxBin string) string {

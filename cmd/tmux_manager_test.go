@@ -46,3 +46,33 @@ func TestShouldStartIsolatedTmuxSession(t *testing.T) {
 		})
 	}
 }
+
+func TestWTXPaneStyleOptions(t *testing.T) {
+	options := wtxPaneStyleOptions()
+	if len(options) == 0 {
+		t.Fatalf("expected pane style options")
+	}
+
+	valuesByKey := make(map[string]string, len(options))
+	for _, option := range options {
+		valuesByKey[option.key] = option.value
+	}
+
+	expected := map[string]string{
+		"pane-border-style":        "fg=#1e1530",
+		"pane-active-border-style": "fg=#6a4b9c",
+		"pane-border-lines":        "heavy",
+		"pane-border-status":       "off",
+		"pane-border-format":       "#{?#{&&:#{pane_active},#{>:#{window_panes},1}},#[bold fg=#1e1530 bg=#6a4b9c] ACTIVE #[default],}",
+	}
+
+	for key, want := range expected {
+		got, ok := valuesByKey[key]
+		if !ok {
+			t.Fatalf("expected option %q to be present", key)
+		}
+		if got != want {
+			t.Fatalf("expected option %q value %q, got %q", key, want, got)
+		}
+	}
+}
