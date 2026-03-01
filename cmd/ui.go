@@ -221,7 +221,6 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case openScreenLoadedMsg:
 		m.ready = true
 		m.status = msg.status
-		m.openLoadErr = ""
 		m.errMsg = ""
 		if msg.err != nil {
 			m.openLoading = false
@@ -262,6 +261,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		if len(m.openPRBranches) == 0 {
 			m.openLoading = false
+			m.openLoadErr = ""
 			return m, tea.Batch(cmds...)
 		}
 		cmds = append(cmds, fetchOpenPRDataCmd(m.orchestrator, m.status.RepoRoot, m.openPRBranches, msg.fetchID))

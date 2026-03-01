@@ -1,6 +1,7 @@
 package cmd
 
 import (
+	"errors"
 	"strings"
 	"testing"
 	"time"
@@ -114,5 +115,57 @@ func TestModeBranchPick_AllowsTypingKAndJInFilter(t *testing.T) {
 	updated = updatedModel.(model)
 	if updated.branchInput.Value() != "kj" {
 		t.Fatalf("expected filter input to include j, got %q", updated.branchInput.Value())
+	}
+}
+
+func TestOpenScreenKeepsPreviousLoadErrorUntilPRDataResolves(t *testing.T) {
+	m := newModel()
+	m.openLoadErr = "previous fetch failed"
+
+	updatedModel, _ := m.Update(openScreenLoadedMsg{
+		status: WorktreeStatus{},
+		branches: []openBranchOption{
+			{Name: "feature/test", PRLoading: true},
+		},
+		prBranches: []string{"feature/test"},
+		fetchID:    "fetch-1",
+	})
+	updated := updatedModel.(model)
+	if updated.openLoadErr != "previous fetch failed" {
+		t.Fatalf("expected prior open load error to remain while PR data fetch is pending, got %q", updated.openLoadErr)
+	}
+	if !updated.openLoading {
+		t.Fatalf("expected open screen to remain loading while PR data fetch is pending")
+	}
+
+	updatedModel, _ = updated.Update(pollStatusTickMsg(time.Now()))
+	updated = updatedModel.(model)
+	if updated.openLoadErr != "previous fetch failed" {
+		t.Fatalf("expected prior open load error to remain visible across poll tick, got %q", updated.openLoadErr)
+	}
+
+	updatedModel, _ = updated.Update(openScreenPRDataMsg{fetchID: "fetch-1", err: errors.New("gh lookup failed")})
+	updated = updatedModel.(model)
+	if updated.openLoadErr != "gh lookup failed" {
+		t.Fatalf("expected PR fetch error to replace load error, got %q", updated.openLoadErr)
+	}
+
+	updatedModel, _ = updated.Update(openScreenLoadedMsg{
+		status: WorktreeStatus{},
+		branches: []openBranchOption{
+			{Name: "feature/test", PRLoading: true},
+		},
+		prBranches: []string{"feature/test"},
+		fetchID:    "fetch-2",
+	})
+	updated = updatedModel.(model)
+	if updated.openLoadErr != "gh lookup failed" {
+		t.Fatalf("expected latest load error to remain while next PR fetch is pending, got %q", updated.openLoadErr)
+	}
+
+	updatedModel, _ = updated.Update(openScreenPRDataMsg{fetchID: "fetch-2", byBranch: map[string]PRData{}})
+	updated = updatedModel.(model)
+	if updated.openLoadErr != "" {
+		t.Fatalf("expected load error to clear after successful PR fetch, got %q", updated.openLoadErr)
 	}
 }
