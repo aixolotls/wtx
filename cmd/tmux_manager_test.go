@@ -98,3 +98,24 @@ func TestShouldDisableTmuxInputEnhancements(t *testing.T) {
 		})
 	}
 }
+
+func TestTmuxInputTerminalProgram(t *testing.T) {
+	tests := []struct {
+		name    string
+		current string
+		parent  string
+		want    string
+	}{
+		{name: "uses parent terminal when available", current: "tmux-256color", parent: "iTerm.app", want: "iTerm.app"},
+		{name: "falls back to current terminal", current: "Apple_Terminal", parent: "", want: "Apple_Terminal"},
+		{name: "trims surrounding whitespace", current: " ghostty ", parent: " ", want: "ghostty"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := tmuxInputTerminalProgram(tt.current, tt.parent); got != tt.want {
+				t.Fatalf("tmuxInputTerminalProgram(%q, %q)=%q, want %q", tt.current, tt.parent, got, tt.want)
+			}
+		})
+	}
+}
