@@ -386,7 +386,7 @@ func applyWTXSessionDefaults(sessionID string, enableDestroyUnattached bool) {
 	if enableDestroyUnattached {
 		tmuxSetOption(sessionID, "destroy-unattached", "on")
 	}
-	terminalProgram := tmuxInputTerminalProgram(resolveCurrentTerminalProgram(), resolveCurrentSessionParentTerminalProgram())
+	terminalProgram := resolveCurrentTerminalProgram()
 	if !shouldDisableTmuxInputEnhancements(terminalProgram) {
 		// Keep wheel scrolling and mouse interactions working across modern terminals.
 		tmuxSetOption(sessionID, "mouse", "on")
@@ -672,13 +672,6 @@ func shouldStartIsolatedTmuxSession(currentTerminal string, sessionParentTermina
 		return false
 	}
 	return current != sessionParent
-}
-
-func tmuxInputTerminalProgram(currentTerminal string, sessionParentTerminal string) string {
-	if parent := strings.TrimSpace(sessionParentTerminal); parent != "" {
-		return parent
-	}
-	return strings.TrimSpace(currentTerminal)
 }
 
 func normalizeTerminalProgram(value string) string {
