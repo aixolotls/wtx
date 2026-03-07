@@ -64,7 +64,8 @@ func loadOpenScreenCmd(orchestrator *WorktreeOrchestrator, mgr *WorktreeManager)
 		}
 
 		slots := make([]openSlotState, len(status.Worktrees))
-		lockedBranches := make(map[string]bool, len(status.Worktrees))
+		lockedOnlyBranches := make(map[string]bool, len(status.Worktrees))
+		openSlotBranches := make(map[string]bool, len(status.Worktrees))
 		seenPR := make(map[string]bool, len(branches)+len(status.Worktrees))
 		prBranches := make([]string, 0, len(branches)+len(status.Worktrees))
 
@@ -75,25 +76,34 @@ func loadOpenScreenCmd(orchestrator *WorktreeOrchestrator, mgr *WorktreeManager)
 				Locked:    !wt.Available,
 				PRLoading: true,
 			}
-			if slots[i].Locked {
-				lockedBranches[strings.TrimSpace(slots[i].Branch)] = true
-			}
 			name := strings.TrimSpace(slots[i].Branch)
-			if name != "" && name != "detached" && !seenPR[name] {
+			if name == "" {
+				continue
+			}
+			if slots[i].Locked {
+				if !openSlotBranches[name] {
+					lockedOnlyBranches[name] = true
+				}
+			} else {
+				openSlotBranches[name] = true
+				delete(lockedOnlyBranches, name)
+			}
+			if name != "detached" && !seenPR[name] {
 				seenPR[name] = true
 				prBranches = append(prBranches, name)
 			}
 		}
 
 		openBranches := make([]openBranchOption, 0, len(branches))
-		lockedList := make([]openBranchOption, 0, len(lockedBranches))
-		lockedSeen := make(map[string]bool, len(lockedBranches))
+		lockedList := make([]openBranchOption, 0, len(lockedOnlyBranches))
+		lockedSeen := make(map[string]bool, len(lockedOnlyBranches))
+		openSeen := make(map[string]bool, len(branches)+len(openSlotBranches))
 		for _, branch := range branches {
 			name := strings.TrimSpace(branch)
 			if name == "" {
 				continue
 			}
-			if lockedBranches[name] {
+			if lockedOnlyBranches[name] {
 				lockedList = append(lockedList, openBranchOption{
 					Name:      name,
 					PRLoading: true,
@@ -109,13 +119,14 @@ func loadOpenScreenCmd(orchestrator *WorktreeOrchestrator, mgr *WorktreeManager)
 				Name:      name,
 				PRLoading: true,
 			})
+			openSeen[name] = true
 			if !seenPR[name] {
 				seenPR[name] = true
 				prBranches = append(prBranches, name)
 			}
 		}
-		missingLocked := make([]string, 0, len(lockedBranches))
-		for name := range lockedBranches {
+		missingLocked := make([]string, 0, len(lockedOnlyBranches))
+		for name := range lockedOnlyBranches {
 			if !lockedSeen[name] {
 				missingLocked = append(missingLocked, name)
 			}
@@ -123,6 +134,23 @@ func loadOpenScreenCmd(orchestrator *WorktreeOrchestrator, mgr *WorktreeManager)
 		sort.Strings(missingLocked)
 		for _, name := range missingLocked {
 			lockedList = append(lockedList, openBranchOption{
+				Name:      name,
+				PRLoading: true,
+			})
+			if !seenPR[name] {
+				seenPR[name] = true
+				prBranches = append(prBranches, name)
+			}
+		}
+		missingOpen := make([]string, 0, len(openSlotBranches))
+		for name := range openSlotBranches {
+			if !openSeen[name] {
+				missingOpen = append(missingOpen, name)
+			}
+		}
+		sort.Strings(missingOpen)
+		for _, name := range missingOpen {
+			openBranches = append(openBranches, openBranchOption{
 				Name:      name,
 				PRLoading: true,
 			})

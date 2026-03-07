@@ -623,7 +623,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 						)
 						return m, m.confirmForm.Init()
 					}
-					if slot.Dirty {
+					if slot.Dirty && strings.TrimSpace(slot.Branch) != strings.TrimSpace(m.openTargetBranch) {
 						m.warnMsg = "Worktree is unclean. Clean it first."
 						m.pendingPath = slot.Path
 						m.pendingBranch = slot.Branch

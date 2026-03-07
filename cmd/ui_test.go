@@ -169,3 +169,26 @@ func TestOpenScreenKeepsPreviousLoadErrorUntilPRDataResolves(t *testing.T) {
 		t.Fatalf("expected load error to clear after successful PR fetch, got %q", updated.openLoadErr)
 	}
 }
+
+func TestOpenPickAllowsDirtyWorktreeWhenBranchMatchesTarget(t *testing.T) {
+	m := newModel()
+	m.mode = modeOpen
+	m.openStage = openStagePickWorktree
+	m.openTargetBranch = "feature/existing"
+	m.openPickIndex = 1
+	m.openSlots = []openSlotState{
+		{Path: t.TempDir(), Branch: "feature/existing", Dirty: true},
+	}
+
+	updatedModel, cmd := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	updated := updatedModel.(model)
+	if !updated.openCreating {
+		t.Fatalf("expected selecting dirty matching branch slot to continue")
+	}
+	if updated.warnMsg != "" {
+		t.Fatalf("expected no warning for dirty matching branch slot, got %q", updated.warnMsg)
+	}
+	if cmd == nil {
+		t.Fatalf("expected command to be scheduled")
+	}
+}

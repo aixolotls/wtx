@@ -58,3 +58,19 @@ func TestFormatInteractiveUpdateHint_OnResolveFallbackError(t *testing.T) {
 		t.Fatalf("expected error hint")
 	}
 }
+
+func TestFormatInteractiveUpdateHint_ShowsUpdateWhenFallbackHasUpdate(t *testing.T) {
+	got, isErr := formatInteractiveUpdateHint("v1.0.0", updateCheckResult{
+		CurrentVersion:  "v1.0.0",
+		LatestVersion:   "v1.1.0",
+		UpdateAvailable: true,
+		ResolveError:    "network down",
+	}, nil)
+	want := "wtx v1.0.0 -> v1.1.0 available. Run: wtx update"
+	if got != want {
+		t.Fatalf("expected %q, got %q", want, got)
+	}
+	if isErr {
+		t.Fatalf("expected non-error hint")
+	}
+}

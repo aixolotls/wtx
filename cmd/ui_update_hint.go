@@ -33,11 +33,11 @@ func formatInteractiveUpdateHint(current string, result updateCheckResult, err e
 	if err != nil {
 		return fmt.Sprintf("wtx update check failed: %v", err), true
 	}
+	if result.UpdateAvailable {
+		return fmt.Sprintf(wtxUpdateCommandFormat, result.CurrentVersion, result.LatestVersion), false
+	}
 	if strings.TrimSpace(result.ResolveError) != "" {
 		return fmt.Sprintf("wtx update check failed: %s", strings.TrimSpace(result.ResolveError)), true
-	}
-	if err == nil && result.UpdateAvailable {
-		return fmt.Sprintf(wtxUpdateCommandFormat, result.CurrentVersion, result.LatestVersion), false
 	}
 	return fmt.Sprintf("wtx %s", current), false
 }
