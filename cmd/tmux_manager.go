@@ -399,6 +399,7 @@ func applyWTXSessionDefaults(sessionID string, enableDestroyUnattached bool) {
 	tmuxSetOption(sessionID, "key-table", keyTable)
 	configureTmuxStatusRefreshHooks(sessionID)
 	configureTmuxPaneBadgeBehavior(sessionID)
+	configureTmuxMouseBindings(keyTable)
 
 	// Only resize when split panes are present.
 	_ = exec.Command("tmux", "bind-key", "-r", "-T", keyTable, "M-Up", "if-shell", "-F", "#{>:#{window_panes},1}", "select-pane -U").Run()
@@ -416,6 +417,17 @@ func applyWTXSessionDefaults(sessionID string, enableDestroyUnattached bool) {
 	}
 
 	configureTmuxActionBindings(sessionID, resolveAgentLifecycleBinary())
+}
+
+func configureTmuxMouseBindings(keyTable string) {
+	keyTable = strings.TrimSpace(keyTable)
+	if keyTable == "" {
+		return
+	}
+	// Custom key tables do not inherit root mouse bindings, so re-bind border drag resize.
+	_ = exec.Command("tmux", "bind-key", "-T", keyTable, "MouseDown1Pane", "select-pane", "-t=").Run()
+	_ = exec.Command("tmux", "bind-key", "-T", keyTable, "MouseDown1Border", "select-pane", "-t=").Run()
+	_ = exec.Command("tmux", "bind-key", "-T", keyTable, "MouseDrag1Border", "resize-pane", "-M").Run()
 }
 
 type tmuxOption struct {
