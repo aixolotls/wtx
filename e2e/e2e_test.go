@@ -196,6 +196,20 @@ func currentBranch(t *testing.T, path string) string {
 	return runCmd(t, path, nil, "git", "rev-parse", "--abbrev-ref", "HEAD")
 }
 
+func branchExists(t *testing.T, path string, branch string) bool {
+	t.Helper()
+	cmd := exec.Command("git", "show-ref", "--verify", "refs/heads/"+branch)
+	cmd.Dir = path
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		if _, ok := err.(*exec.ExitError); ok {
+			return false
+		}
+		t.Fatalf("check branch exists %q failed: %v\n%s", branch, err, string(out))
+	}
+	return true
+}
+
 func TestCompletionInstallAndStatusHermetic(t *testing.T) {
 	t.Parallel()
 	home := t.TempDir()
@@ -259,6 +273,79 @@ func TestCheckoutExistingBranchNonInteractive(t *testing.T) {
 	slotBranch := currentBranch(t, repo.managedWT)
 	if rootBranch != "feature/existing" && slotBranch != "feature/existing" {
 		t.Fatalf("expected feature/existing to be checked out in a worktree, got root=%q slot=%q", rootBranch, slotBranch)
+	}
+}
+
+func TestCheckoutExistingBranchNonInteractive_UsesDirtyAttachedWorktree(t *testing.T) {
+	t.Parallel()
+	repo := setupRepoWithManagedWorktree(t)
+	runCmd(t, repo.managedWT, nil, "git", "checkout", "-b", "feature/dirty-attached")
+	if err := os.WriteFile(filepath.Join(repo.managedWT, "README.md"), []byte("dirty-attached\n"), 0o644); err != nil {
+		t.Fatalf("dirty managed worktree: %v", err)
+	}
+
+	home := t.TempDir()
+	writeConfig(t, home, "true")
+	env := testEnv(home)
+
+	result := runWTX(t, repo.root, env, "checkout", "feature/dirty-attached")
+	if result.err != nil {
+		t.Fatalf("checkout existing dirty attached failed: %v\n%s", result.err, result.out)
+	}
+
+	rootBranch := currentBranch(t, repo.root)
+	slotBranch := currentBranch(t, repo.managedWT)
+	if rootBranch == "feature/dirty-attached" {
+		t.Fatalf("expected root worktree to stay on its branch, got %q", rootBranch)
+	}
+	if slotBranch != "feature/dirty-attached" {
+		t.Fatalf("expected dirty attached worktree to stay selected, got %q", slotBranch)
+	}
+}
+
+func TestCheckoutWithOnlyDirtyWorktreeSelectionRulesNonInteractive(t *testing.T) {
+	t.Parallel()
+	repoRoot := setupSingleWorktreeRepo(t)
+	runCmd(t, repoRoot, nil, "git", "checkout", "-B", "branchA")
+	runCmd(t, repoRoot, nil, "git", "branch", "branchB")
+	if err := os.WriteFile(filepath.Join(repoRoot, "README.md"), []byte("dirty-branchA\n"), 0o644); err != nil {
+		t.Fatalf("dirty root worktree: %v", err)
+	}
+
+	home := t.TempDir()
+	writeConfig(t, home, "true")
+	env := testEnv(home)
+
+	// Scenario 1: selecting dirty attached branchA should use that worktree.
+	scenario1 := runWTX(t, repoRoot, env, "checkout", "branchA")
+	if scenario1.err != nil {
+		t.Fatalf("scenario1 failed: %v\n%s", scenario1.err, scenario1.out)
+	}
+	if got := currentBranch(t, repoRoot); got != "branchA" {
+		t.Fatalf("scenario1 expected branchA to remain selected, got %q", got)
+	}
+
+	// Scenario 2: new branch should not reuse the only dirty worktree.
+	scenario2 := runWTX(t, repoRoot, env, "checkout", "-b", "branch-new", "--from", "main", "--no-fetch")
+	if scenario2.err != nil {
+		t.Fatalf("scenario2 failed unexpectedly: %v\n%s", scenario2.err, scenario2.out)
+	}
+	assertContains(t, scenario2.out, "No worktree is available for this target branch.")
+	if got := currentBranch(t, repoRoot); got != "branchA" {
+		t.Fatalf("scenario2 expected branch to remain branchA, got %q", got)
+	}
+	if branchExists(t, repoRoot, "branch-new") {
+		t.Fatalf("scenario2 expected no new branch to be created when only dirty worktree exists")
+	}
+
+	// Scenario 3: selecting existing branchB should behave like scenario2.
+	scenario3 := runWTX(t, repoRoot, env, "checkout", "branchB")
+	if scenario3.err != nil {
+		t.Fatalf("scenario3 failed unexpectedly: %v\n%s", scenario3.err, scenario3.out)
+	}
+	assertContains(t, scenario3.out, "No worktree is available for this target branch.")
+	if got := currentBranch(t, repoRoot); got != "branchA" {
+		t.Fatalf("scenario3 expected branch to remain branchA, got %q", got)
 	}
 }
 
