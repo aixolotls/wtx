@@ -64,6 +64,9 @@ func ensureFreshTmuxSession(args []string) (bool, error) {
 
 	applyStartupThemeToSession(session, cwd, parentTerminal)
 	if inTmux {
+		// Apply defaults before launching the pane command so modified-key handling is
+		// active from the first prompt in the new session.
+		applyWTXSessionDefaults(session, false)
 		if err := launchCommandInSession(session, bin, args[1:]); err != nil {
 			return false, err
 		}
@@ -384,6 +387,7 @@ func applyWTXSessionDefaults(sessionID string, enableDestroyUnattached bool) {
 	configureTmuxStatusRefreshHooks(sessionID)
 	configureTmuxPaneBadgeBehavior(sessionID)
 	configureTmuxMouseBindings(keyTable)
+	clearLegacyTmuxInputBindings(keyTable)
 
 	// Only resize when split panes are present.
 	_ = exec.Command("tmux", "bind-key", "-r", "-T", keyTable, "M-Up", "if-shell", "-F", "#{>:#{window_panes},1}", "select-pane -U").Run()
@@ -401,6 +405,16 @@ func applyWTXSessionDefaults(sessionID string, enableDestroyUnattached bool) {
 	}
 
 	configureTmuxActionBindings(sessionID, resolveAgentLifecycleBinary())
+}
+
+func clearLegacyTmuxInputBindings(keyTable string) {
+	tables := []string{"root", "copy-mode", "copy-mode-vi"}
+	if keyTable = strings.TrimSpace(keyTable); keyTable != "" {
+		tables = append(tables, keyTable)
+	}
+	for _, table := range tables {
+		_ = exec.Command("tmux", "unbind-key", "-T", table, "M-[").Run()
+	}
 }
 
 func configureTmuxMouseBindings(keyTable string) {
